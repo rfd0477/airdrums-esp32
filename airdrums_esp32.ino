@@ -30,7 +30,7 @@
  *
  * TUNING GUIDE:
  * -------------
- * - Hit too sensitive? Increase HIT_THRESHOLD (default 3.0g)
+ * - Hit too sensitive? Increase HIT_THRESHOLD (default 3.0g ≈ 29.4 m/s²)
  * - Zones switching too easily? Increase SOFT_SWITCH_THRESHOLD
  * - Opposite zones hard to reach? Decrease HARD_SWITCH_THRESHOLD
  * - Zone flickering? Increase ZONE_LOCK_DURATION
@@ -80,8 +80,8 @@ constexpr uint16_t SAMPLE_RATE = 200;          // Hz (5ms loop period)
 constexpr uint32_t LOOP_PERIOD_US = 5000;      // Microseconds
 
 // ========== HIT DETECTION ==========
-float HIT_THRESHOLD = 3.0f;       // g (minimum acceleration for hit)
-float HIT_MAX = 16.0f;            // g (maximum for volume scaling)
+float HIT_THRESHOLD = 3.0f * 9.81f;  // m/s² (minimum acceleration for hit)
+float HIT_MAX = 16.0f * 9.81f;       // m/s² (maximum for volume scaling)
 uint16_t DEBOUNCE_MS = 30;        // Milliseconds between hits
 
 // ========== ZONE DETECTION (ORIENTATION) ==========
@@ -93,7 +93,7 @@ float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for TOP zones)
 // ========== GESTURE DETECTION ==========
 float VELOCITY_THRESHOLD = 2.0f;        // m/s (fast movement detection)
 float DISTANCE_THRESHOLD = 0.05f;       // meters (5cm minimum travel)
-float ROTATION_THRESHOLD = 200.0f;      // deg/s (Z-axis rotation)
+float ROTATION_THRESHOLD = 200.0f * DEG_TO_RAD;  // rad/s (Z-axis rotation)
 float GESTURE_TIME_WINDOW = 150.0f;     // ms (gesture must complete within)
 
 // ========== SMART ZONE SWITCHING ==========
@@ -121,13 +121,10 @@ bool DEBUG_TIMING = false;
 // ========== AUDIO ==========
 bool AUDIO_ENABLED = true;
 bool USE_SHARED_ZONES = true;           // True = both sticks use same sound set
+constexpr uint8_t POLYPHONY = 4;        // Voices per zone for overlapping hits
 uint8_t VOLUME_MIN = 10;                // Minimum DAC audio volume (0-255)
 uint8_t VOLUME_MAX = 100;               // Maximum DAC audio volume
 float VELOCITY_CURVE_EXPONENT = 1.2f;   // Volume response curve (1.0 = linear)
-
-// ========== MPU6050 SCALE FACTORS ==========
-constexpr float ACCEL_SCALE = 8.0f / 32768.0f * 9.81f;  // g to m/s²
-constexpr float GYRO_SCALE = 500.0f / 32768.0f;         // LSB to deg/s
 
 // ============================================================================
 // 2. Data structures
@@ -190,9 +187,27 @@ struct GestureDetector {
       gestureStart = millis();
     }
 
-    velocity.x += linearAccel.x * dt;
-    velocity.y += linearAccel.y * dt;
-    velocity.z += linearAccel.z * dt;
+    // apply light exponential damping each step
+    velocity.x *= 0.92f;
+    velocity.y *= 0.92f;
+    velocity.z *= 0.92f;
+
+    // zero small noisy velocities for stability
+    const float VEL_ZERO_THRESH = 0.05f; // m/s
+    if (fabsf(velocity.x) < VEL_ZERO_THRESH) velocity.x = 0.0f;
+    if (fabsf(velocity.y) < VEL_ZERO_THRESH) velocity.y = 0.0f;
+    if (fabsf(velocity.z) < VEL_ZERO_THRESH) velocity.z = 0.0f;
+
+    // ignore tiny accelerations to avoid integrating sensor noise
+    const float ACCEL_DEADZONE = 0.2f; // m/s^2
+    Vector3f accelFiltered = linearAccel;
+    if (fabsf(linearAccel.x) < ACCEL_DEADZONE) accelFiltered.x = 0.0f;
+    if (fabsf(linearAccel.y) < ACCEL_DEADZONE) accelFiltered.y = 0.0f;
+    if (fabsf(linearAccel.z) < ACCEL_DEADZONE) accelFiltered.z = 0.0f;
+
+    velocity.x += accelFiltered.x * dt;
+    velocity.y += accelFiltered.y * dt;
+    velocity.z += accelFiltered.z * dt;
 
     displacement.x += velocity.x * dt;
     displacement.y += velocity.y * dt;
@@ -331,26 +346,135 @@ XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
 // Use a shared set of 6 zones by default. If USE_SHARED_ZONES is false, load
 // left/right files (12 total) so each stick can still hit all zones with its
-// own sound bank.
-XT_Wav_Class zoneCenter("/spiffs/zone_center.wav");
-XT_Wav_Class zoneLeft("/spiffs/zone_left.wav");
-XT_Wav_Class zoneRight("/spiffs/zone_right.wav");
-XT_Wav_Class zoneTopLeft("/spiffs/zone_top_left.wav");
-XT_Wav_Class zoneTopRight("/spiffs/zone_top_right.wav");
-XT_Wav_Class zoneFront("/spiffs/zone_front.wav");
+// own sound bank. Each zone has a small voice pool for overlapping hits.
+XT_Wav_Class zoneCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav")
+};
+XT_Wav_Class zoneLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav")
+};
+XT_Wav_Class zoneRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav")
+};
+XT_Wav_Class zoneTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav")
+};
+XT_Wav_Class zoneTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav")
+};
+XT_Wav_Class zoneFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav")
+};
 
-XT_Wav_Class leftCenter("/spiffs/left_center.wav");
-XT_Wav_Class leftLeft("/spiffs/left_left.wav");
-XT_Wav_Class leftRight("/spiffs/left_right.wav");
-XT_Wav_Class leftTopLeft("/spiffs/left_top_left.wav");
-XT_Wav_Class leftTopRight("/spiffs/left_top_right.wav");
-XT_Wav_Class leftFront("/spiffs/left_front.wav");
-XT_Wav_Class rightCenter("/spiffs/right_center.wav");
-XT_Wav_Class rightLeft("/spiffs/right_left.wav");
-XT_Wav_Class rightRight("/spiffs/right_right.wav");
-XT_Wav_Class rightTopLeft("/spiffs/right_top_left.wav");
-XT_Wav_Class rightTopRight("/spiffs/right_top_right.wav");
-XT_Wav_Class rightFront("/spiffs/right_front.wav");
+XT_Wav_Class leftCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav")
+};
+XT_Wav_Class leftLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav")
+};
+XT_Wav_Class leftRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav")
+};
+XT_Wav_Class leftTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav")
+};
+XT_Wav_Class leftTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav")
+};
+XT_Wav_Class leftFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav")
+};
+XT_Wav_Class rightCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav")
+};
+XT_Wav_Class rightLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav")
+};
+XT_Wav_Class rightRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav")
+};
+XT_Wav_Class rightTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav")
+};
+XT_Wav_Class rightTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav")
+};
+XT_Wav_Class rightFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav")
+};
+
+uint8_t zoneCenterIndex = 0;
+uint8_t zoneLeftIndex = 0;
+uint8_t zoneRightIndex = 0;
+uint8_t zoneTopLeftIndex = 0;
+uint8_t zoneTopRightIndex = 0;
+uint8_t zoneFrontIndex = 0;
+uint8_t leftCenterIndex = 0;
+uint8_t leftLeftIndex = 0;
+uint8_t leftRightIndex = 0;
+uint8_t leftTopLeftIndex = 0;
+uint8_t leftTopRightIndex = 0;
+uint8_t leftFrontIndex = 0;
+uint8_t rightCenterIndex = 0;
+uint8_t rightLeftIndex = 0;
+uint8_t rightRightIndex = 0;
+uint8_t rightTopLeftIndex = 0;
+uint8_t rightTopRightIndex = 0;
+uint8_t rightFrontIndex = 0;
 
 // ============================================================================
 // 4. Forward declarations
@@ -373,6 +497,8 @@ void processSerialCommands();
 void printHelp();
 void checkI2CBusHealth();
 void testMode();
+XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index);
+XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick);
 
 // ============================================================================
 // 5. Setup
@@ -542,7 +668,7 @@ Zone getBaseZone(const StickState &stick) {
 }
 
 Gesture detectRotation(float gyroZ) {
-  if (fabsf(gyroZ) > ROTATION_THRESHOLD * DEG_TO_RAD) {
+  if (fabsf(gyroZ) > ROTATION_THRESHOLD) {
     return GESTURE_ROTATE_Z;
   }
   return GESTURE_NONE;
@@ -602,76 +728,110 @@ void initAudio() {
   }
 
   if (USE_SHARED_ZONES) {
-    if (!SPIFFS.exists("/zone_center.wav")) {
-      Serial.println("WARNING: Missing shared zone audio files. Audio disabled.");
-      AUDIO_ENABLED = false;
-      return;
+    const char *files[] = {
+      "/zone_center.wav",
+      "/zone_left.wav",
+      "/zone_right.wav",
+      "/zone_top_left.wav",
+      "/zone_top_right.wav",
+      "/zone_front.wav"
+    };
+    for (const char *file : files) {
+      if (!SPIFFS.exists(file)) {
+        Serial.print("WARNING: Missing shared zone audio file: ");
+        Serial.println(file);
+        AUDIO_ENABLED = false;
+      }
     }
   } else {
-    if (!SPIFFS.exists("/left_center.wav") || !SPIFFS.exists("/right_center.wav")) {
-      Serial.println("WARNING: Missing per-stick audio files. Audio disabled.");
-      AUDIO_ENABLED = false;
-      return;
+    const char *files[] = {
+      "/left_center.wav",
+      "/left_left.wav",
+      "/left_right.wav",
+      "/left_top_left.wav",
+      "/left_top_right.wav",
+      "/left_front.wav",
+      "/right_center.wav",
+      "/right_left.wav",
+      "/right_right.wav",
+      "/right_top_left.wav",
+      "/right_top_right.wav",
+      "/right_front.wav"
+    };
+    for (const char *file : files) {
+      if (!SPIFFS.exists(file)) {
+        Serial.print("WARNING: Missing per-stick audio file: ");
+        Serial.println(file);
+        AUDIO_ENABLED = false;
+      }
     }
   }
 
-  Serial.println("Audio system initialized successfully");
+  if (AUDIO_ENABLED) {
+    Serial.println("Audio system initialized successfully");
+  }
 }
 
-XT_Wav_Class *getZoneSound(Zone zone, bool isLeftStick) {
+XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index) {
+  XT_Wav_Class *voice = &voices[index];
+  index = (index + 1) % POLYPHONY;
+  return voice;
+}
+
+XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick) {
   if (USE_SHARED_ZONES) {
     switch (zone) {
       case ZONE_CENTER:
-        return &zoneCenter;
+        return nextVoice(zoneCenterVoices, zoneCenterIndex);
       case ZONE_LEFT:
-        return &zoneLeft;
+        return nextVoice(zoneLeftVoices, zoneLeftIndex);
       case ZONE_RIGHT:
-        return &zoneRight;
+        return nextVoice(zoneRightVoices, zoneRightIndex);
       case ZONE_TOP_LEFT:
-        return &zoneTopLeft;
+        return nextVoice(zoneTopLeftVoices, zoneTopLeftIndex);
       case ZONE_TOP_RIGHT:
-        return &zoneTopRight;
+        return nextVoice(zoneTopRightVoices, zoneTopRightIndex);
       case ZONE_FRONT:
-        return &zoneFront;
+        return nextVoice(zoneFrontVoices, zoneFrontIndex);
       default:
-        return &zoneCenter;
+        return nextVoice(zoneCenterVoices, zoneCenterIndex);
     }
   }
 
   if (isLeftStick) {
     switch (zone) {
       case ZONE_CENTER:
-        return &leftCenter;
+        return nextVoice(leftCenterVoices, leftCenterIndex);
       case ZONE_LEFT:
-        return &leftLeft;
+        return nextVoice(leftLeftVoices, leftLeftIndex);
       case ZONE_RIGHT:
-        return &leftRight;
+        return nextVoice(leftRightVoices, leftRightIndex);
       case ZONE_TOP_LEFT:
-        return &leftTopLeft;
+        return nextVoice(leftTopLeftVoices, leftTopLeftIndex);
       case ZONE_TOP_RIGHT:
-        return &leftTopRight;
+        return nextVoice(leftTopRightVoices, leftTopRightIndex);
       case ZONE_FRONT:
-        return &leftFront;
+        return nextVoice(leftFrontVoices, leftFrontIndex);
       default:
-        return &leftCenter;
+        return nextVoice(leftCenterVoices, leftCenterIndex);
     }
   }
 
   switch (zone) {
     case ZONE_CENTER:
-      return &rightCenter;
+      return nextVoice(rightCenterVoices, rightCenterIndex);
     case ZONE_LEFT:
-      return &rightLeft;
+      return nextVoice(rightLeftVoices, rightLeftIndex);
     case ZONE_RIGHT:
-      return &rightRight;
+      return nextVoice(rightRightVoices, rightRightIndex);
     case ZONE_TOP_LEFT:
-      return &rightTopLeft;
+      return nextVoice(rightTopLeftVoices, rightTopLeftIndex);
     case ZONE_TOP_RIGHT:
-      return &rightTopRight;
+      return nextVoice(rightTopRightVoices, rightTopRightIndex);
     case ZONE_FRONT:
-      return &rightFront;
+      return nextVoice(rightFrontVoices, rightFrontIndex);
     default:
-      return &rightCenter;
+      return nextVoice(rightCenterVoices, rightCenterIndex);
   }
 }
 
@@ -681,9 +841,9 @@ void triggerAudio(const StickState &stick, bool isLeftStick) {
   }
 
   uint8_t dacVolume = map(stick.hitDetector.hitVolume, 0, 255, VOLUME_MIN, VOLUME_MAX);
-  XT_Wav_Class *sound = getZoneSound(stick.zoneSwitcher.currentZone, isLeftStick);
-  sound->Volume = dacVolume;
-  DacAudio.Play(sound);
+  XT_Wav_Class *voice = getZoneVoice(stick.zoneSwitcher.currentZone, isLeftStick);
+  voice->Volume = dacVolume;
+  DacAudio.Play(voice);
 }
 
 // ============================================================================
