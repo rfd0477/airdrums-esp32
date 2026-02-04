@@ -100,6 +100,7 @@ float GESTURE_TIME_WINDOW = 150.0f;     // ms (gesture must complete within)
 float SOFT_SWITCH_THRESHOLD = 1.0f;      // Easy switch to adjacent zone
 float HARD_SWITCH_THRESHOLD = 2.5f;      // Strong gesture for opposite zone
 uint32_t ZONE_LOCK_DURATION = 500;       // ms (prevent rapid zone flickering)
+uint32_t MULTI_GESTURE_WINDOW = 200;     // ms (repeat gesture window for distance jumps)
 
 // Gesture strength weights
 float SPEED_WEIGHT = 0.4f;
@@ -270,6 +271,8 @@ struct HitDetector {
 struct SmartZoneSwitcher {
   Zone currentZone = ZONE_CENTER;
   uint32_t lastSwitchTime = 0;
+  Gesture lastGesture = GESTURE_NONE;
+  uint32_t lastGestureTime = 0;
 
   Zone evaluate(Zone baseZone, Gesture gesture, float strength, float roll) {
     uint32_t now = millis();
@@ -282,12 +285,28 @@ struct SmartZoneSwitcher {
       targetZone = baseZone;
     }
 
-    bool opposite = isOpposite(currentZone, targetZone);
-    float threshold = opposite ? HARD_SWITCH_THRESHOLD : SOFT_SWITCH_THRESHOLD;
+    int distance = zoneDistance(currentZone, targetZone);
+    if (distance <= 0) {
+      return currentZone;
+    }
 
-    if (strength > threshold) {
+    bool isRepeatGesture = (gesture != GESTURE_NONE) &&
+                           (gesture == lastGesture) &&
+                           (now - lastGestureTime <= MULTI_GESTURE_WINDOW);
+    float threshold = (distance == 1) ? SOFT_SWITCH_THRESHOLD
+                                      : (HARD_SWITCH_THRESHOLD * static_cast<float>(distance));
+
+    if (strength > threshold || isRepeatGesture) {
       currentZone = targetZone;
       lastSwitchTime = now;
+    } else if (distance > 1) {
+      currentZone = stepToward(currentZone, targetZone);
+      lastSwitchTime = now;
+    }
+
+    if (gesture != GESTURE_NONE) {
+      lastGesture = gesture;
+      lastGestureTime = now;
     }
 
     return currentZone;
@@ -315,6 +334,78 @@ struct SmartZoneSwitcher {
   static bool isOpposite(Zone current, Zone target) {
     return (current == ZONE_LEFT && target == ZONE_RIGHT) ||
            (current == ZONE_RIGHT && target == ZONE_LEFT);
+  }
+
+  static int zoneDistance(Zone from, Zone to) {
+    if (from == to) {
+      return 0;
+    }
+
+    const Zone neighbors[][3] = {
+      {ZONE_LEFT, ZONE_RIGHT, ZONE_FRONT},    // CENTER
+      {ZONE_CENTER, ZONE_TOP_LEFT, ZONE_NONE}, // LEFT
+      {ZONE_CENTER, ZONE_TOP_RIGHT, ZONE_NONE}, // RIGHT
+      {ZONE_LEFT, ZONE_NONE, ZONE_NONE},      // TOP_LEFT
+      {ZONE_RIGHT, ZONE_NONE, ZONE_NONE},     // TOP_RIGHT
+      {ZONE_CENTER, ZONE_NONE, ZONE_NONE}     // FRONT
+    };
+
+    bool visited[6] = {false, false, false, false, false, false};
+    Zone queue[6];
+    int dist[6] = {0, 0, 0, 0, 0, 0};
+    int head = 0;
+    int tail = 0;
+
+    queue[tail++] = from;
+    visited[from] = true;
+    dist[from] = 0;
+
+    while (head < tail) {
+      Zone current = queue[head++];
+      if (current == to) {
+        return dist[current];
+      }
+      for (Zone neighbor : neighbors[current]) {
+        if (neighbor == ZONE_NONE || visited[neighbor]) {
+          continue;
+        }
+        visited[neighbor] = true;
+        dist[neighbor] = dist[current] + 1;
+        queue[tail++] = neighbor;
+      }
+    }
+
+    return 0;
+  }
+
+  static Zone stepToward(Zone from, Zone to) {
+    if (from == to) {
+      return from;
+    }
+
+    const Zone neighbors[][3] = {
+      {ZONE_LEFT, ZONE_RIGHT, ZONE_FRONT},     // CENTER
+      {ZONE_CENTER, ZONE_TOP_LEFT, ZONE_NONE}, // LEFT
+      {ZONE_CENTER, ZONE_TOP_RIGHT, ZONE_NONE}, // RIGHT
+      {ZONE_LEFT, ZONE_NONE, ZONE_NONE},       // TOP_LEFT
+      {ZONE_RIGHT, ZONE_NONE, ZONE_NONE},      // TOP_RIGHT
+      {ZONE_CENTER, ZONE_NONE, ZONE_NONE}      // FRONT
+    };
+
+    Zone bestNeighbor = from;
+    int bestDistance = 100;
+    for (Zone neighbor : neighbors[from]) {
+      if (neighbor == ZONE_NONE) {
+        continue;
+      }
+      int distance = zoneDistance(neighbor, to);
+      if (distance > 0 && distance < bestDistance) {
+        bestDistance = distance;
+        bestNeighbor = neighbor;
+      }
+    }
+
+    return bestNeighbor;
   }
 };
 
