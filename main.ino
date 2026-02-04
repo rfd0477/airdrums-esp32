@@ -50,9 +50,6 @@
  *   zone_center.wav, zone_left.wav, zone_right.wav, zone_top_left.wav,
  *   zone_top_right.wav, zone_front.wav
  *
- * If you want separate left/right sound sets, set USE_SHARED_ZONES = false and
- * provide left_*.wav and right_*.wav files as noted in loadAudioFiles().
- *
  * ============================================================================
  */
 
@@ -122,7 +119,7 @@ bool DEBUG_TIMING = false;
 
 // ========== AUDIO ==========
 bool AUDIO_ENABLED = true;
-bool USE_SHARED_ZONES = true;           // True = both sticks use same sound set
+// Shared zones only (per-stick sound banks removed).
 constexpr uint8_t POLYPHONY = 4;        // Voices per zone for overlapping hits
 uint8_t VOLUME_MIN = 10;                // Minimum DAC audio volume (0-255)
 uint8_t VOLUME_MAX = 100;               // Maximum DAC audio volume
@@ -503,9 +500,7 @@ AudioMixer audioMixer;
 
 XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
-// Use a shared set of 6 zones by default. If USE_SHARED_ZONES is false, load
-// left/right files (12 total) so each stick can still hit all zones with its
-// own sound bank. Each zone has a small voice pool for overlapping hits.
+// Shared set of 6 zones. Each zone has a small voice pool for overlapping hits.
 XT_Wav_Class zoneCenterVoices[POLYPHONY] = {
   XT_Wav_Class("/zone_center.wav"),
   XT_Wav_Class("/zone_center.wav"),
@@ -543,97 +538,12 @@ XT_Wav_Class zoneFrontVoices[POLYPHONY] = {
   XT_Wav_Class("/zone_front.wav")
 };
 
-XT_Wav_Class leftCenterVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_center.wav"),
-  XT_Wav_Class("/left_center.wav"),
-  XT_Wav_Class("/left_center.wav"),
-  XT_Wav_Class("/left_center.wav")
-};
-XT_Wav_Class leftLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_left.wav"),
-  XT_Wav_Class("/left_left.wav"),
-  XT_Wav_Class("/left_left.wav"),
-  XT_Wav_Class("/left_left.wav")
-};
-XT_Wav_Class leftRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_right.wav"),
-  XT_Wav_Class("/left_right.wav"),
-  XT_Wav_Class("/left_right.wav"),
-  XT_Wav_Class("/left_right.wav")
-};
-XT_Wav_Class leftTopLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_top_left.wav"),
-  XT_Wav_Class("/left_top_left.wav"),
-  XT_Wav_Class("/left_top_left.wav"),
-  XT_Wav_Class("/left_top_left.wav")
-};
-XT_Wav_Class leftTopRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_top_right.wav"),
-  XT_Wav_Class("/left_top_right.wav"),
-  XT_Wav_Class("/left_top_right.wav"),
-  XT_Wav_Class("/left_top_right.wav")
-};
-XT_Wav_Class leftFrontVoices[POLYPHONY] = {
-  XT_Wav_Class("/left_front.wav"),
-  XT_Wav_Class("/left_front.wav"),
-  XT_Wav_Class("/left_front.wav"),
-  XT_Wav_Class("/left_front.wav")
-};
-XT_Wav_Class rightCenterVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_center.wav"),
-  XT_Wav_Class("/right_center.wav"),
-  XT_Wav_Class("/right_center.wav"),
-  XT_Wav_Class("/right_center.wav")
-};
-XT_Wav_Class rightLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_left.wav"),
-  XT_Wav_Class("/right_left.wav"),
-  XT_Wav_Class("/right_left.wav"),
-  XT_Wav_Class("/right_left.wav")
-};
-XT_Wav_Class rightRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_right.wav"),
-  XT_Wav_Class("/right_right.wav"),
-  XT_Wav_Class("/right_right.wav"),
-  XT_Wav_Class("/right_right.wav")
-};
-XT_Wav_Class rightTopLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_top_left.wav"),
-  XT_Wav_Class("/right_top_left.wav"),
-  XT_Wav_Class("/right_top_left.wav"),
-  XT_Wav_Class("/right_top_left.wav")
-};
-XT_Wav_Class rightTopRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_top_right.wav"),
-  XT_Wav_Class("/right_top_right.wav"),
-  XT_Wav_Class("/right_top_right.wav"),
-  XT_Wav_Class("/right_top_right.wav")
-};
-XT_Wav_Class rightFrontVoices[POLYPHONY] = {
-  XT_Wav_Class("/right_front.wav"),
-  XT_Wav_Class("/right_front.wav"),
-  XT_Wav_Class("/right_front.wav"),
-  XT_Wav_Class("/right_front.wav")
-};
-
 uint8_t zoneCenterIndex = 0;
 uint8_t zoneLeftIndex = 0;
 uint8_t zoneRightIndex = 0;
 uint8_t zoneTopLeftIndex = 0;
 uint8_t zoneTopRightIndex = 0;
 uint8_t zoneFrontIndex = 0;
-uint8_t leftCenterIndex = 0;
-uint8_t leftLeftIndex = 0;
-uint8_t leftRightIndex = 0;
-uint8_t leftTopLeftIndex = 0;
-uint8_t leftTopRightIndex = 0;
-uint8_t leftFrontIndex = 0;
-uint8_t rightCenterIndex = 0;
-uint8_t rightLeftIndex = 0;
-uint8_t rightRightIndex = 0;
-uint8_t rightTopLeftIndex = 0;
-uint8_t rightTopRightIndex = 0;
-uint8_t rightFrontIndex = 0;
 
 // ============================================================================
 // 4. Forward declarations
@@ -657,7 +567,7 @@ void printHelp();
 void checkI2CBusHealth();
 void testMode();
 XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index);
-XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick);
+XT_Wav_Class *getZoneVoice(Zone zone);
 void saveCalibration();
 bool loadCalibration();
 
@@ -891,43 +801,19 @@ void initAudio() {
     return;
   }
 
-  if (USE_SHARED_ZONES) {
-    const char *files[] = {
-      "/zone_center.wav",
-      "/zone_left.wav",
-      "/zone_right.wav",
-      "/zone_top_left.wav",
-      "/zone_top_right.wav",
-      "/zone_front.wav"
-    };
-    for (const char *file : files) {
-      if (!SPIFFS.exists(file)) {
-        Serial.print("WARNING: Missing shared zone audio file: ");
-        Serial.println(file);
-        AUDIO_ENABLED = false;
-      }
-    }
-  } else {
-    const char *files[] = {
-      "/left_center.wav",
-      "/left_left.wav",
-      "/left_right.wav",
-      "/left_top_left.wav",
-      "/left_top_right.wav",
-      "/left_front.wav",
-      "/right_center.wav",
-      "/right_left.wav",
-      "/right_right.wav",
-      "/right_top_left.wav",
-      "/right_top_right.wav",
-      "/right_front.wav"
-    };
-    for (const char *file : files) {
-      if (!SPIFFS.exists(file)) {
-        Serial.print("WARNING: Missing per-stick audio file: ");
-        Serial.println(file);
-        AUDIO_ENABLED = false;
-      }
+  const char *files[] = {
+    "/zone_center.wav",
+    "/zone_left.wav",
+    "/zone_right.wav",
+    "/zone_top_left.wav",
+    "/zone_top_right.wav",
+    "/zone_front.wav"
+  };
+  for (const char *file : files) {
+    if (!SPIFFS.exists(file)) {
+      Serial.print("WARNING: Missing shared zone audio file: ");
+      Serial.println(file);
+      AUDIO_ENABLED = false;
     }
   }
 
@@ -942,60 +828,22 @@ XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index) {
   return voice;
 }
 
-XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick) {
-  if (USE_SHARED_ZONES) {
-    switch (zone) {
-      case ZONE_CENTER:
-        return nextVoice(zoneCenterVoices, zoneCenterIndex);
-      case ZONE_LEFT:
-        return nextVoice(zoneLeftVoices, zoneLeftIndex);
-      case ZONE_RIGHT:
-        return nextVoice(zoneRightVoices, zoneRightIndex);
-      case ZONE_TOP_LEFT:
-        return nextVoice(zoneTopLeftVoices, zoneTopLeftIndex);
-      case ZONE_TOP_RIGHT:
-        return nextVoice(zoneTopRightVoices, zoneTopRightIndex);
-      case ZONE_FRONT:
-        return nextVoice(zoneFrontVoices, zoneFrontIndex);
-      default:
-        return nextVoice(zoneCenterVoices, zoneCenterIndex);
-    }
-  }
-
-  if (isLeftStick) {
-    switch (zone) {
-      case ZONE_CENTER:
-        return nextVoice(leftCenterVoices, leftCenterIndex);
-      case ZONE_LEFT:
-        return nextVoice(leftLeftVoices, leftLeftIndex);
-      case ZONE_RIGHT:
-        return nextVoice(leftRightVoices, leftRightIndex);
-      case ZONE_TOP_LEFT:
-        return nextVoice(leftTopLeftVoices, leftTopLeftIndex);
-      case ZONE_TOP_RIGHT:
-        return nextVoice(leftTopRightVoices, leftTopRightIndex);
-      case ZONE_FRONT:
-        return nextVoice(leftFrontVoices, leftFrontIndex);
-      default:
-        return nextVoice(leftCenterVoices, leftCenterIndex);
-    }
-  }
-
+XT_Wav_Class *getZoneVoice(Zone zone) {
   switch (zone) {
     case ZONE_CENTER:
-      return nextVoice(rightCenterVoices, rightCenterIndex);
+      return nextVoice(zoneCenterVoices, zoneCenterIndex);
     case ZONE_LEFT:
-      return nextVoice(rightLeftVoices, rightLeftIndex);
+      return nextVoice(zoneLeftVoices, zoneLeftIndex);
     case ZONE_RIGHT:
-      return nextVoice(rightRightVoices, rightRightIndex);
+      return nextVoice(zoneRightVoices, zoneRightIndex);
     case ZONE_TOP_LEFT:
-      return nextVoice(rightTopLeftVoices, rightTopLeftIndex);
+      return nextVoice(zoneTopLeftVoices, zoneTopLeftIndex);
     case ZONE_TOP_RIGHT:
-      return nextVoice(rightTopRightVoices, rightTopRightIndex);
+      return nextVoice(zoneTopRightVoices, zoneTopRightIndex);
     case ZONE_FRONT:
-      return nextVoice(rightFrontVoices, rightFrontIndex);
+      return nextVoice(zoneFrontVoices, zoneFrontIndex);
     default:
-      return nextVoice(rightCenterVoices, rightCenterIndex);
+      return nextVoice(zoneCenterVoices, zoneCenterIndex);
   }
 }
 
@@ -1013,7 +861,7 @@ void triggerAudio(const StickState &stick, bool isLeftStick) {
   }
 
   uint8_t dacVolume = map(stick.hitDetector.hitVolume, 0, 255, VOLUME_MIN, VOLUME_MAX);
-  XT_Wav_Class *voice = getZoneVoice(zone, isLeftStick);
+  XT_Wav_Class *voice = getZoneVoice(zone);
   voice->Volume = dacVolume;
   DacAudio.Play(voice);
 }
@@ -1286,5 +1134,3 @@ void testMode() {
   }
   Serial.println("Test mode complete.");
 }
-
-
