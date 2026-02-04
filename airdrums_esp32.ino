@@ -63,6 +63,7 @@
 #include <driver/dac.h>
 #include <XT_DAC_Audio.h>
 #include <SPIFFS.h>
+#include <Preferences.h>
 
 // ============================================================================
 // 1. Configuration constants
@@ -176,17 +177,30 @@ struct GestureDetector {
   Vector3f velocity{0.0f, 0.0f, 0.0f};
   Vector3f displacement{0.0f, 0.0f, 0.0f};
   uint32_t gestureStart = 0;
+  Vector3f lastAccel{0.0f, 0.0f, 0.0f};
+  uint32_t lastSignificantMotion = 0;
 
   void reset() {
     velocity = {0.0f, 0.0f, 0.0f};
     displacement = {0.0f, 0.0f, 0.0f};
+    lastAccel = {0.0f, 0.0f, 0.0f};
+    lastSignificantMotion = millis();
     gestureStart = millis();
   }
 
   Gesture detect(const Vector3f &linearAccel, float dt, float roll) {
     if (gestureStart == 0) {
       gestureStart = millis();
+      lastSignificantMotion = millis();
     }
+
+    const float HP_ALPHA = 0.95f;
+    Vector3f accelFiltered{
+      HP_ALPHA * (lastAccel.x + linearAccel.x - lastAccel.x),
+      HP_ALPHA * (lastAccel.y + linearAccel.y - lastAccel.y),
+      HP_ALPHA * (lastAccel.z + linearAccel.z - lastAccel.z)
+    };
+    lastAccel = linearAccel;
 
     // apply light exponential damping each step
     velocity.x *= 0.92f;
@@ -194,17 +208,16 @@ struct GestureDetector {
     velocity.z *= 0.92f;
 
     // zero small noisy velocities for stability
-    const float VEL_ZERO_THRESH = 0.05f; // m/s
+    const float VEL_ZERO_THRESH = 0.08f; // m/s
     if (fabsf(velocity.x) < VEL_ZERO_THRESH) velocity.x = 0.0f;
     if (fabsf(velocity.y) < VEL_ZERO_THRESH) velocity.y = 0.0f;
     if (fabsf(velocity.z) < VEL_ZERO_THRESH) velocity.z = 0.0f;
 
     // ignore tiny accelerations to avoid integrating sensor noise
     const float ACCEL_DEADZONE = 0.2f; // m/s^2
-    Vector3f accelFiltered = linearAccel;
-    if (fabsf(linearAccel.x) < ACCEL_DEADZONE) accelFiltered.x = 0.0f;
-    if (fabsf(linearAccel.y) < ACCEL_DEADZONE) accelFiltered.y = 0.0f;
-    if (fabsf(linearAccel.z) < ACCEL_DEADZONE) accelFiltered.z = 0.0f;
+    if (fabsf(accelFiltered.x) < ACCEL_DEADZONE) accelFiltered.x = 0.0f;
+    if (fabsf(accelFiltered.y) < ACCEL_DEADZONE) accelFiltered.y = 0.0f;
+    if (fabsf(accelFiltered.z) < ACCEL_DEADZONE) accelFiltered.z = 0.0f;
 
     velocity.x += accelFiltered.x * dt;
     velocity.y += accelFiltered.y * dt;
@@ -213,6 +226,20 @@ struct GestureDetector {
     displacement.x += velocity.x * dt;
     displacement.y += velocity.y * dt;
     displacement.z += velocity.z * dt;
+
+    float totalAccel = fabsf(linearAccel.x) + fabsf(linearAccel.y) + fabsf(linearAccel.z);
+    if (totalAccel > 1.0f) {
+      lastSignificantMotion = millis();
+    }
+
+    uint32_t now = millis();
+    if (now - lastSignificantMotion > 500) {
+      displacement = {0.0f, 0.0f, 0.0f};
+      velocity.x *= 0.5f;
+      velocity.y *= 0.5f;
+      velocity.z *= 0.5f;
+      lastSignificantMotion = now;
+    }
 
     if (displacement.x < -DISTANCE_THRESHOLD && velocity.x < -VELOCITY_THRESHOLD) {
       return GESTURE_SWIPE_LEFT;
@@ -422,6 +449,45 @@ struct StickState {
   float gestureStrength = 0.0f;
 };
 
+struct CalibrationData {
+  Vector3f accelOffset;
+  Vector3f gyroOffset;
+  float neutralRoll;
+  float neutralPitch;
+  float neutralYaw;
+  uint32_t timestamp;
+  uint32_t checksum;
+
+  uint32_t calculateChecksum() const {
+    uint32_t sum = 0;
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(this);
+    for (size_t i = 0; i < sizeof(CalibrationData) - sizeof(uint32_t); i++) {
+      sum += bytes[i];
+    }
+    return sum;
+  }
+
+  bool isValid() const {
+    return checksum == calculateChecksum() &&
+           timestamp > 0 &&
+           (millis() - timestamp) < 604800000;
+  }
+};
+
+struct AudioMixer {
+  uint32_t lastTrigger[6] = {0};
+  static constexpr uint32_t MIN_INTERVAL_MS = 10;
+
+  bool shouldPlay(Zone zone) {
+    uint32_t now = millis();
+    if (now - lastTrigger[zone] < MIN_INTERVAL_MS) {
+      return false;
+    }
+    lastTrigger[zone] = now;
+    return true;
+  }
+};
+
 // ============================================================================
 // 3. Global objects
 // ============================================================================
@@ -432,6 +498,8 @@ Madgwick filterLeft;
 Madgwick filterRight;
 StickState leftStick;
 StickState rightStick;
+Preferences preferences;
+AudioMixer audioMixer;
 
 XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
@@ -590,6 +658,8 @@ void checkI2CBusHealth();
 void testMode();
 XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index);
 XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick);
+void saveCalibration();
+bool loadCalibration();
 
 // ============================================================================
 // 5. Setup
@@ -607,8 +677,11 @@ void setup() {
   filterRight.begin(SAMPLE_RATE);
 
   initAudio();
-  calibrateSensors();
-  calibrateZoneBaseline();
+  if (!loadCalibration()) {
+    calibrateSensors();
+    calibrateZoneBaseline();
+    saveCalibration();
+  }
   printHelp();
 }
 
@@ -931,8 +1004,16 @@ void triggerAudio(const StickState &stick, bool isLeftStick) {
     return;
   }
 
+  Zone zone = stick.zoneSwitcher.currentZone;
+  if (!audioMixer.shouldPlay(zone)) {
+    if (DEBUG_HITS) {
+      Serial.println("Skipped duplicate zone trigger");
+    }
+    return;
+  }
+
   uint8_t dacVolume = map(stick.hitDetector.hitVolume, 0, 255, VOLUME_MIN, VOLUME_MAX);
-  XT_Wav_Class *voice = getZoneVoice(stick.zoneSwitcher.currentZone, isLeftStick);
+  XT_Wav_Class *voice = getZoneVoice(zone, isLeftStick);
   voice->Volume = dacVolume;
   DacAudio.Play(voice);
 }
@@ -940,6 +1021,72 @@ void triggerAudio(const StickState &stick, bool isLeftStick) {
 // ============================================================================
 // 10. Calibration functions
 // ============================================================================
+
+void saveCalibration() {
+  preferences.begin("drumcal", false);
+
+  CalibrationData leftCal{
+    leftStick.accelOffset,
+    leftStick.gyroOffset,
+    leftStick.neutralRoll,
+    leftStick.neutralPitch,
+    leftStick.neutralYaw,
+    millis(),
+    0
+  };
+  leftCal.checksum = leftCal.calculateChecksum();
+
+  CalibrationData rightCal{
+    rightStick.accelOffset,
+    rightStick.gyroOffset,
+    rightStick.neutralRoll,
+    rightStick.neutralPitch,
+    rightStick.neutralYaw,
+    millis(),
+    0
+  };
+  rightCal.checksum = rightCal.calculateChecksum();
+
+  preferences.putBytes("left", &leftCal, sizeof(CalibrationData));
+  preferences.putBytes("right", &rightCal, sizeof(CalibrationData));
+  preferences.end();
+
+  Serial.println("✓ Calibration saved to NVS");
+}
+
+bool loadCalibration() {
+  preferences.begin("drumcal", true);
+
+  CalibrationData leftCal, rightCal;
+  size_t leftSize = preferences.getBytes("left", &leftCal, sizeof(CalibrationData));
+  size_t rightSize = preferences.getBytes("right", &rightCal, sizeof(CalibrationData));
+  preferences.end();
+
+  if (leftSize != sizeof(CalibrationData) || rightSize != sizeof(CalibrationData)) {
+    Serial.println("No saved calibration found");
+    return false;
+  }
+
+  if (!leftCal.isValid() || !rightCal.isValid()) {
+    Serial.println("Saved calibration invalid or expired");
+    return false;
+  }
+
+  leftStick.accelOffset = leftCal.accelOffset;
+  leftStick.gyroOffset = leftCal.gyroOffset;
+  leftStick.neutralRoll = leftCal.neutralRoll;
+  leftStick.neutralPitch = leftCal.neutralPitch;
+  leftStick.neutralYaw = leftCal.neutralYaw;
+
+  rightStick.accelOffset = rightCal.accelOffset;
+  rightStick.gyroOffset = rightCal.gyroOffset;
+  rightStick.neutralRoll = rightCal.neutralRoll;
+  rightStick.neutralPitch = rightCal.neutralPitch;
+  rightStick.neutralYaw = rightCal.neutralYaw;
+
+  Serial.println("✓ Calibration loaded from NVS");
+  return true;
+}
 
 void calibrateSensors() {
   Serial.println("=== CALIBRATION MODE ===");
@@ -1059,9 +1206,11 @@ void processSerialCommands() {
   switch (cmd) {
     case 'c':
       calibrateSensors();
+      saveCalibration();
       break;
     case 'z':
       calibrateZoneBaseline();
+      saveCalibration();
       break;
     case 't':
       testMode();
