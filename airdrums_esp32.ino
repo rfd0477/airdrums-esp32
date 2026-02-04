@@ -169,7 +169,9 @@ enum Gesture : uint8_t {
   GESTURE_SWIPE_LEFT = 1,
   GESTURE_SWIPE_RIGHT = 2,
   GESTURE_SWIPE_UP = 3,
-  GESTURE_ROTATE_Z = 4
+  GESTURE_SWIPE_UP_LEFT = 4,
+  GESTURE_SWIPE_UP_RIGHT = 5,
+  GESTURE_ROTATE_Z = 6
 };
 
 struct GestureDetector {
@@ -183,7 +185,7 @@ struct GestureDetector {
     gestureStart = millis();
   }
 
-  Gesture detect(const Vector3f &linearAccel, float dt) {
+  Gesture detect(const Vector3f &linearAccel, float dt, float roll) {
     if (gestureStart == 0) {
       gestureStart = millis();
     }
@@ -203,6 +205,12 @@ struct GestureDetector {
       return GESTURE_SWIPE_RIGHT;
     }
     if (displacement.y > DISTANCE_THRESHOLD && velocity.y > VELOCITY_THRESHOLD) {
+      if (displacement.x < -DISTANCE_THRESHOLD && roll < 0.0f) {
+        return GESTURE_SWIPE_UP_LEFT;
+      }
+      if (displacement.x > DISTANCE_THRESHOLD && roll > 0.0f) {
+        return GESTURE_SWIPE_UP_RIGHT;
+      }
       return GESTURE_SWIPE_UP;
     }
 
@@ -276,6 +284,10 @@ struct SmartZoneSwitcher {
         return ZONE_LEFT;
       case GESTURE_SWIPE_RIGHT:
         return ZONE_RIGHT;
+      case GESTURE_SWIPE_UP_LEFT:
+        return ZONE_TOP_LEFT;
+      case GESTURE_SWIPE_UP_RIGHT:
+        return ZONE_TOP_RIGHT;
       case GESTURE_SWIPE_UP:
         return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
       case GESTURE_ROTATE_Z:
@@ -557,8 +569,9 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
     stick.sensor.linearAccelZ
   };
 
+  float roll = stick.sensor.roll - stick.neutralRoll;
   Gesture rotationGesture = detectRotation(stick.sensor.gyroZ);
-  Gesture swipeGesture = stick.gestureDetector.detect(linearAccel, dt);
+  Gesture swipeGesture = stick.gestureDetector.detect(linearAccel, dt, roll);
   Gesture gesture = (rotationGesture != GESTURE_NONE) ? rotationGesture : swipeGesture;
 
   float durationMs = millis() - stick.gestureDetector.gestureStart;
@@ -567,7 +580,6 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
                                                    durationMs);
 
   Zone baseZone = getBaseZone(stick);
-  float roll = stick.sensor.roll - stick.neutralRoll;
   stick.zoneSwitcher.evaluate(baseZone, gesture, stick.gestureStrength, roll);
 
   stick.hitDetector.detect(linearAccel);
