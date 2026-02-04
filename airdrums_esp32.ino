@@ -4,7 +4,7 @@
  * ============================================================================
  *
  * Hardware: ESP32-WROOM + 2× MPU6050 + PAM8403 + RC Filter
- * Features: 8-zone gesture detection, ultra-low latency, velocity mapping
+ * Features: 6-zone gesture detection, ultra-low latency, velocity mapping
  *
  * WIRING SUMMARY:
  * ---------------
@@ -47,7 +47,8 @@
  * --------------------------------
  * Format: 8-bit mono WAV @ 16kHz
  * Files (default shared set for both sticks):
- *   zone_center.wav, zone_left.wav, zone_right.wav, zone_up.wav, zone_front.wav
+ *   zone_center.wav, zone_left.wav, zone_right.wav, zone_top_left.wav,
+ *   zone_top_right.wav, zone_front.wav
  *
  * If you want separate left/right sound sets, set USE_SHARED_ZONES = false and
  * provide left_*.wav and right_*.wav files as noted in loadAudioFiles().
@@ -87,7 +88,7 @@ uint16_t DEBOUNCE_MS = 30;        // Milliseconds between hits
 float YAW_ROTATION_THRESHOLD = 45.0f;   // degrees (Z-rotation for FRONT zone)
 float ROLL_LEFT_THRESHOLD = -30.0f;     // degrees (X-tilt for LEFT zone)
 float ROLL_RIGHT_THRESHOLD = 30.0f;     // degrees (X-tilt for RIGHT zone)
-float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for UP zone)
+float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for TOP zones)
 
 // ========== GESTURE DETECTION ==========
 float VELOCITY_THRESHOLD = 2.0f;        // m/s (fast movement detection)
@@ -157,8 +158,9 @@ enum Zone : uint8_t {
   ZONE_CENTER = 0,
   ZONE_LEFT = 1,
   ZONE_RIGHT = 2,
-  ZONE_UP = 3,
-  ZONE_FRONT = 4,
+  ZONE_TOP_LEFT = 3,
+  ZONE_TOP_RIGHT = 4,
+  ZONE_FRONT = 5,
   ZONE_NONE = 255
 };
 
@@ -246,13 +248,13 @@ struct SmartZoneSwitcher {
   Zone currentZone = ZONE_CENTER;
   uint32_t lastSwitchTime = 0;
 
-  Zone evaluate(Zone baseZone, Gesture gesture, float strength) {
+  Zone evaluate(Zone baseZone, Gesture gesture, float strength, float roll) {
     uint32_t now = millis();
     if (now - lastSwitchTime < ZONE_LOCK_DURATION) {
       return currentZone;
     }
 
-    Zone targetZone = mapGestureToZone(gesture);
+    Zone targetZone = mapGestureToZone(gesture, roll);
     if (targetZone == ZONE_NONE) {
       targetZone = baseZone;
     }
@@ -268,14 +270,14 @@ struct SmartZoneSwitcher {
     return currentZone;
   }
 
-  static Zone mapGestureToZone(Gesture gesture) {
+  static Zone mapGestureToZone(Gesture gesture, float roll) {
     switch (gesture) {
       case GESTURE_SWIPE_LEFT:
         return ZONE_LEFT;
       case GESTURE_SWIPE_RIGHT:
         return ZONE_RIGHT;
       case GESTURE_SWIPE_UP:
-        return ZONE_UP;
+        return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
       case GESTURE_ROTATE_Z:
         return ZONE_FRONT;
       default:
@@ -315,24 +317,27 @@ StickState rightStick;
 
 XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
-// Use a shared set of 5 zones by default. If USE_SHARED_ZONES is false, load
-// left/right files (10 total) so each stick can still hit all zones with its
+// Use a shared set of 6 zones by default. If USE_SHARED_ZONES is false, load
+// left/right files (12 total) so each stick can still hit all zones with its
 // own sound bank.
 XT_Wav_Class zoneCenter("/spiffs/zone_center.wav");
 XT_Wav_Class zoneLeft("/spiffs/zone_left.wav");
 XT_Wav_Class zoneRight("/spiffs/zone_right.wav");
-XT_Wav_Class zoneUp("/spiffs/zone_up.wav");
+XT_Wav_Class zoneTopLeft("/spiffs/zone_top_left.wav");
+XT_Wav_Class zoneTopRight("/spiffs/zone_top_right.wav");
 XT_Wav_Class zoneFront("/spiffs/zone_front.wav");
 
 XT_Wav_Class leftCenter("/spiffs/left_center.wav");
 XT_Wav_Class leftLeft("/spiffs/left_left.wav");
 XT_Wav_Class leftRight("/spiffs/left_right.wav");
-XT_Wav_Class leftUp("/spiffs/left_up.wav");
+XT_Wav_Class leftTopLeft("/spiffs/left_top_left.wav");
+XT_Wav_Class leftTopRight("/spiffs/left_top_right.wav");
 XT_Wav_Class leftFront("/spiffs/left_front.wav");
 XT_Wav_Class rightCenter("/spiffs/right_center.wav");
 XT_Wav_Class rightLeft("/spiffs/right_left.wav");
 XT_Wav_Class rightRight("/spiffs/right_right.wav");
-XT_Wav_Class rightUp("/spiffs/right_up.wav");
+XT_Wav_Class rightTopLeft("/spiffs/right_top_left.wav");
+XT_Wav_Class rightTopRight("/spiffs/right_top_right.wav");
 XT_Wav_Class rightFront("/spiffs/right_front.wav");
 
 // ============================================================================
@@ -519,7 +524,7 @@ Zone getBaseZone(const StickState &stick) {
     return ZONE_RIGHT;
   }
   if (pitch > PITCH_UP_THRESHOLD) {
-    return ZONE_UP;
+    return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
   }
   return ZONE_CENTER;
 }
@@ -562,7 +567,8 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
                                                    durationMs);
 
   Zone baseZone = getBaseZone(stick);
-  stick.zoneSwitcher.evaluate(baseZone, gesture, stick.gestureStrength);
+  float roll = stick.sensor.roll - stick.neutralRoll;
+  stick.zoneSwitcher.evaluate(baseZone, gesture, stick.gestureStrength, roll);
 
   stick.hitDetector.detect(linearAccel);
 
@@ -609,8 +615,10 @@ XT_Wav_Class *getZoneSound(Zone zone, bool isLeftStick) {
         return &zoneLeft;
       case ZONE_RIGHT:
         return &zoneRight;
-      case ZONE_UP:
-        return &zoneUp;
+      case ZONE_TOP_LEFT:
+        return &zoneTopLeft;
+      case ZONE_TOP_RIGHT:
+        return &zoneTopRight;
       case ZONE_FRONT:
         return &zoneFront;
       default:
@@ -626,8 +634,10 @@ XT_Wav_Class *getZoneSound(Zone zone, bool isLeftStick) {
         return &leftLeft;
       case ZONE_RIGHT:
         return &leftRight;
-      case ZONE_UP:
-        return &leftUp;
+      case ZONE_TOP_LEFT:
+        return &leftTopLeft;
+      case ZONE_TOP_RIGHT:
+        return &leftTopRight;
       case ZONE_FRONT:
         return &leftFront;
       default:
@@ -642,8 +652,10 @@ XT_Wav_Class *getZoneSound(Zone zone, bool isLeftStick) {
       return &rightLeft;
     case ZONE_RIGHT:
       return &rightRight;
-    case ZONE_UP:
-      return &rightUp;
+    case ZONE_TOP_LEFT:
+      return &rightTopLeft;
+    case ZONE_TOP_RIGHT:
+      return &rightTopRight;
     case ZONE_FRONT:
       return &rightFront;
     default:
@@ -862,4 +874,3 @@ void testMode() {
   }
   Serial.println("Test mode complete.");
 }
-
