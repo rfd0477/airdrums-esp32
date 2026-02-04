@@ -4,7 +4,7 @@
  * ============================================================================
  *
  * Hardware: ESP32-WROOM + 2× MPU6050 + PAM8403 + RC Filter
- * Features: 8-zone gesture detection, ultra-low latency, velocity mapping
+ * Features: 6-zone gesture detection, ultra-low latency, velocity mapping
  *
  * WIRING SUMMARY:
  * ---------------
@@ -30,7 +30,7 @@
  *
  * TUNING GUIDE:
  * -------------
- * - Hit too sensitive? Increase HIT_THRESHOLD (default 3.0g)
+ * - Hit too sensitive? Increase HIT_THRESHOLD (default 3.0g ≈ 29.4 m/s²)
  * - Zones switching too easily? Increase SOFT_SWITCH_THRESHOLD
  * - Opposite zones hard to reach? Decrease HARD_SWITCH_THRESHOLD
  * - Zone flickering? Increase ZONE_LOCK_DURATION
@@ -47,7 +47,8 @@
  * --------------------------------
  * Format: 8-bit mono WAV @ 16kHz
  * Files (default shared set for both sticks):
- *   zone_center.wav, zone_left.wav, zone_right.wav, zone_up.wav, zone_front.wav
+ *   zone_center.wav, zone_left.wav, zone_right.wav, zone_top_left.wav,
+ *   zone_top_right.wav, zone_front.wav
  *
  * If you want separate left/right sound sets, set USE_SHARED_ZONES = false and
  * provide left_*.wav and right_*.wav files as noted in loadAudioFiles().
@@ -62,6 +63,7 @@
 #include <driver/dac.h>
 #include <XT_DAC_Audio.h>
 #include <SPIFFS.h>
+#include <Preferences.h>
 
 // ============================================================================
 // 1. Configuration constants
@@ -79,26 +81,27 @@ constexpr uint16_t SAMPLE_RATE = 200;          // Hz (5ms loop period)
 constexpr uint32_t LOOP_PERIOD_US = 5000;      // Microseconds
 
 // ========== HIT DETECTION ==========
-float HIT_THRESHOLD = 3.0f;       // g (minimum acceleration for hit)
-float HIT_MAX = 16.0f;            // g (maximum for volume scaling)
+float HIT_THRESHOLD = 3.0f * 9.81f;  // m/s² (minimum acceleration for hit)
+float HIT_MAX = 16.0f * 9.81f;       // m/s² (maximum for volume scaling)
 uint16_t DEBOUNCE_MS = 30;        // Milliseconds between hits
 
 // ========== ZONE DETECTION (ORIENTATION) ==========
 float YAW_ROTATION_THRESHOLD = 45.0f;   // degrees (Z-rotation for FRONT zone)
 float ROLL_LEFT_THRESHOLD = -30.0f;     // degrees (X-tilt for LEFT zone)
 float ROLL_RIGHT_THRESHOLD = 30.0f;     // degrees (X-tilt for RIGHT zone)
-float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for UP zone)
+float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for TOP zones)
 
 // ========== GESTURE DETECTION ==========
 float VELOCITY_THRESHOLD = 2.0f;        // m/s (fast movement detection)
 float DISTANCE_THRESHOLD = 0.05f;       // meters (5cm minimum travel)
-float ROTATION_THRESHOLD = 200.0f;      // deg/s (Z-axis rotation)
+float ROTATION_THRESHOLD = 200.0f * DEG_TO_RAD;  // rad/s (Z-axis rotation)
 float GESTURE_TIME_WINDOW = 150.0f;     // ms (gesture must complete within)
 
 // ========== SMART ZONE SWITCHING ==========
 float SOFT_SWITCH_THRESHOLD = 1.0f;      // Easy switch to adjacent zone
 float HARD_SWITCH_THRESHOLD = 2.5f;      // Strong gesture for opposite zone
 uint32_t ZONE_LOCK_DURATION = 500;       // ms (prevent rapid zone flickering)
+uint32_t MULTI_GESTURE_WINDOW = 200;     // ms (repeat gesture window for distance jumps)
 
 // Gesture strength weights
 float SPEED_WEIGHT = 0.4f;
@@ -120,13 +123,10 @@ bool DEBUG_TIMING = false;
 // ========== AUDIO ==========
 bool AUDIO_ENABLED = true;
 bool USE_SHARED_ZONES = true;           // True = both sticks use same sound set
+constexpr uint8_t POLYPHONY = 4;        // Voices per zone for overlapping hits
 uint8_t VOLUME_MIN = 10;                // Minimum DAC audio volume (0-255)
 uint8_t VOLUME_MAX = 100;               // Maximum DAC audio volume
 float VELOCITY_CURVE_EXPONENT = 1.2f;   // Volume response curve (1.0 = linear)
-
-// ========== MPU6050 SCALE FACTORS ==========
-constexpr float ACCEL_SCALE = 8.0f / 32768.0f * 9.81f;  // g to m/s²
-constexpr float GYRO_SCALE = 500.0f / 32768.0f;         // LSB to deg/s
 
 // ============================================================================
 // 2. Data structures
@@ -157,8 +157,9 @@ enum Zone : uint8_t {
   ZONE_CENTER = 0,
   ZONE_LEFT = 1,
   ZONE_RIGHT = 2,
-  ZONE_UP = 3,
-  ZONE_FRONT = 4,
+  ZONE_TOP_LEFT = 3,
+  ZONE_TOP_RIGHT = 4,
+  ZONE_FRONT = 5,
   ZONE_NONE = 255
 };
 
@@ -167,32 +168,78 @@ enum Gesture : uint8_t {
   GESTURE_SWIPE_LEFT = 1,
   GESTURE_SWIPE_RIGHT = 2,
   GESTURE_SWIPE_UP = 3,
-  GESTURE_ROTATE_Z = 4
+  GESTURE_SWIPE_UP_LEFT = 4,
+  GESTURE_SWIPE_UP_RIGHT = 5,
+  GESTURE_ROTATE_Z = 6
 };
 
 struct GestureDetector {
   Vector3f velocity{0.0f, 0.0f, 0.0f};
   Vector3f displacement{0.0f, 0.0f, 0.0f};
   uint32_t gestureStart = 0;
+  Vector3f lastAccel{0.0f, 0.0f, 0.0f};
+  uint32_t lastSignificantMotion = 0;
 
   void reset() {
     velocity = {0.0f, 0.0f, 0.0f};
     displacement = {0.0f, 0.0f, 0.0f};
+    lastAccel = {0.0f, 0.0f, 0.0f};
+    lastSignificantMotion = millis();
     gestureStart = millis();
   }
 
-  Gesture detect(const Vector3f &linearAccel, float dt) {
+  Gesture detect(const Vector3f &linearAccel, float dt, float roll) {
     if (gestureStart == 0) {
       gestureStart = millis();
+      lastSignificantMotion = millis();
     }
 
-    velocity.x += linearAccel.x * dt;
-    velocity.y += linearAccel.y * dt;
-    velocity.z += linearAccel.z * dt;
+    const float HP_ALPHA = 0.95f;
+    Vector3f accelFiltered{
+      HP_ALPHA * (lastAccel.x + linearAccel.x - lastAccel.x),
+      HP_ALPHA * (lastAccel.y + linearAccel.y - lastAccel.y),
+      HP_ALPHA * (lastAccel.z + linearAccel.z - lastAccel.z)
+    };
+    lastAccel = linearAccel;
+
+    // apply light exponential damping each step
+    velocity.x *= 0.92f;
+    velocity.y *= 0.92f;
+    velocity.z *= 0.92f;
+
+    // zero small noisy velocities for stability
+    const float VEL_ZERO_THRESH = 0.08f; // m/s
+    if (fabsf(velocity.x) < VEL_ZERO_THRESH) velocity.x = 0.0f;
+    if (fabsf(velocity.y) < VEL_ZERO_THRESH) velocity.y = 0.0f;
+    if (fabsf(velocity.z) < VEL_ZERO_THRESH) velocity.z = 0.0f;
+
+    // ignore tiny accelerations to avoid integrating sensor noise
+    const float ACCEL_DEADZONE = 0.2f; // m/s^2
+    if (fabsf(accelFiltered.x) < ACCEL_DEADZONE) accelFiltered.x = 0.0f;
+    if (fabsf(accelFiltered.y) < ACCEL_DEADZONE) accelFiltered.y = 0.0f;
+    if (fabsf(accelFiltered.z) < ACCEL_DEADZONE) accelFiltered.z = 0.0f;
+
+    velocity.x += accelFiltered.x * dt;
+    velocity.y += accelFiltered.y * dt;
+    velocity.z += accelFiltered.z * dt;
 
     displacement.x += velocity.x * dt;
     displacement.y += velocity.y * dt;
     displacement.z += velocity.z * dt;
+
+    float totalAccel = fabsf(linearAccel.x) + fabsf(linearAccel.y) + fabsf(linearAccel.z);
+    if (totalAccel > 1.0f) {
+      lastSignificantMotion = millis();
+    }
+
+    uint32_t now = millis();
+    if (now - lastSignificantMotion > 500) {
+      displacement = {0.0f, 0.0f, 0.0f};
+      velocity.x *= 0.5f;
+      velocity.y *= 0.5f;
+      velocity.z *= 0.5f;
+      lastSignificantMotion = now;
+    }
 
     if (displacement.x < -DISTANCE_THRESHOLD && velocity.x < -VELOCITY_THRESHOLD) {
       return GESTURE_SWIPE_LEFT;
@@ -201,6 +248,12 @@ struct GestureDetector {
       return GESTURE_SWIPE_RIGHT;
     }
     if (displacement.y > DISTANCE_THRESHOLD && velocity.y > VELOCITY_THRESHOLD) {
+      if (displacement.x < -DISTANCE_THRESHOLD && roll < 0.0f) {
+        return GESTURE_SWIPE_UP_LEFT;
+      }
+      if (displacement.x > DISTANCE_THRESHOLD && roll > 0.0f) {
+        return GESTURE_SWIPE_UP_RIGHT;
+      }
       return GESTURE_SWIPE_UP;
     }
 
@@ -245,37 +298,59 @@ struct HitDetector {
 struct SmartZoneSwitcher {
   Zone currentZone = ZONE_CENTER;
   uint32_t lastSwitchTime = 0;
+  Gesture lastGesture = GESTURE_NONE;
+  uint32_t lastGestureTime = 0;
 
-  Zone evaluate(Zone baseZone, Gesture gesture, float strength) {
+  Zone evaluate(Zone baseZone, Gesture gesture, float strength, float roll) {
     uint32_t now = millis();
     if (now - lastSwitchTime < ZONE_LOCK_DURATION) {
       return currentZone;
     }
 
-    Zone targetZone = mapGestureToZone(gesture);
+    Zone targetZone = mapGestureToZone(gesture, roll);
     if (targetZone == ZONE_NONE) {
       targetZone = baseZone;
     }
 
-    bool opposite = isOpposite(currentZone, targetZone);
-    float threshold = opposite ? HARD_SWITCH_THRESHOLD : SOFT_SWITCH_THRESHOLD;
+    int distance = zoneDistance(currentZone, targetZone);
+    if (distance <= 0) {
+      return currentZone;
+    }
 
-    if (strength > threshold) {
+    bool isRepeatGesture = (gesture != GESTURE_NONE) &&
+                           (gesture == lastGesture) &&
+                           (now - lastGestureTime <= MULTI_GESTURE_WINDOW);
+    float threshold = (distance == 1) ? SOFT_SWITCH_THRESHOLD
+                                      : (HARD_SWITCH_THRESHOLD * static_cast<float>(distance));
+
+    if (strength > threshold || isRepeatGesture) {
       currentZone = targetZone;
       lastSwitchTime = now;
+    } else if (distance > 1) {
+      currentZone = stepToward(currentZone, targetZone);
+      lastSwitchTime = now;
+    }
+
+    if (gesture != GESTURE_NONE) {
+      lastGesture = gesture;
+      lastGestureTime = now;
     }
 
     return currentZone;
   }
 
-  static Zone mapGestureToZone(Gesture gesture) {
+  static Zone mapGestureToZone(Gesture gesture, float roll) {
     switch (gesture) {
       case GESTURE_SWIPE_LEFT:
         return ZONE_LEFT;
       case GESTURE_SWIPE_RIGHT:
         return ZONE_RIGHT;
+      case GESTURE_SWIPE_UP_LEFT:
+        return ZONE_TOP_LEFT;
+      case GESTURE_SWIPE_UP_RIGHT:
+        return ZONE_TOP_RIGHT;
       case GESTURE_SWIPE_UP:
-        return ZONE_UP;
+        return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
       case GESTURE_ROTATE_Z:
         return ZONE_FRONT;
       default:
@@ -286,6 +361,78 @@ struct SmartZoneSwitcher {
   static bool isOpposite(Zone current, Zone target) {
     return (current == ZONE_LEFT && target == ZONE_RIGHT) ||
            (current == ZONE_RIGHT && target == ZONE_LEFT);
+  }
+
+  static int zoneDistance(Zone from, Zone to) {
+    if (from == to) {
+      return 0;
+    }
+
+    const Zone neighbors[][3] = {
+      {ZONE_LEFT, ZONE_RIGHT, ZONE_FRONT},    // CENTER
+      {ZONE_CENTER, ZONE_TOP_LEFT, ZONE_NONE}, // LEFT
+      {ZONE_CENTER, ZONE_TOP_RIGHT, ZONE_NONE}, // RIGHT
+      {ZONE_LEFT, ZONE_NONE, ZONE_NONE},      // TOP_LEFT
+      {ZONE_RIGHT, ZONE_NONE, ZONE_NONE},     // TOP_RIGHT
+      {ZONE_CENTER, ZONE_NONE, ZONE_NONE}     // FRONT
+    };
+
+    bool visited[6] = {false, false, false, false, false, false};
+    Zone queue[6];
+    int dist[6] = {0, 0, 0, 0, 0, 0};
+    int head = 0;
+    int tail = 0;
+
+    queue[tail++] = from;
+    visited[from] = true;
+    dist[from] = 0;
+
+    while (head < tail) {
+      Zone current = queue[head++];
+      if (current == to) {
+        return dist[current];
+      }
+      for (Zone neighbor : neighbors[current]) {
+        if (neighbor == ZONE_NONE || visited[neighbor]) {
+          continue;
+        }
+        visited[neighbor] = true;
+        dist[neighbor] = dist[current] + 1;
+        queue[tail++] = neighbor;
+      }
+    }
+
+    return 0;
+  }
+
+  static Zone stepToward(Zone from, Zone to) {
+    if (from == to) {
+      return from;
+    }
+
+    const Zone neighbors[][3] = {
+      {ZONE_LEFT, ZONE_RIGHT, ZONE_FRONT},     // CENTER
+      {ZONE_CENTER, ZONE_TOP_LEFT, ZONE_NONE}, // LEFT
+      {ZONE_CENTER, ZONE_TOP_RIGHT, ZONE_NONE}, // RIGHT
+      {ZONE_LEFT, ZONE_NONE, ZONE_NONE},       // TOP_LEFT
+      {ZONE_RIGHT, ZONE_NONE, ZONE_NONE},      // TOP_RIGHT
+      {ZONE_CENTER, ZONE_NONE, ZONE_NONE}      // FRONT
+    };
+
+    Zone bestNeighbor = from;
+    int bestDistance = 100;
+    for (Zone neighbor : neighbors[from]) {
+      if (neighbor == ZONE_NONE) {
+        continue;
+      }
+      int distance = zoneDistance(neighbor, to);
+      if (distance > 0 && distance < bestDistance) {
+        bestDistance = distance;
+        bestNeighbor = neighbor;
+      }
+    }
+
+    return bestNeighbor;
   }
 };
 
@@ -302,6 +449,45 @@ struct StickState {
   float gestureStrength = 0.0f;
 };
 
+struct CalibrationData {
+  Vector3f accelOffset;
+  Vector3f gyroOffset;
+  float neutralRoll;
+  float neutralPitch;
+  float neutralYaw;
+  uint32_t timestamp;
+  uint32_t checksum;
+
+  uint32_t calculateChecksum() const {
+    uint32_t sum = 0;
+    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(this);
+    for (size_t i = 0; i < sizeof(CalibrationData) - sizeof(uint32_t); i++) {
+      sum += bytes[i];
+    }
+    return sum;
+  }
+
+  bool isValid() const {
+    return checksum == calculateChecksum() &&
+           timestamp > 0 &&
+           (millis() - timestamp) < 604800000;
+  }
+};
+
+struct AudioMixer {
+  uint32_t lastTrigger[6] = {0};
+  static constexpr uint32_t MIN_INTERVAL_MS = 10;
+
+  bool shouldPlay(Zone zone) {
+    uint32_t now = millis();
+    if (now - lastTrigger[zone] < MIN_INTERVAL_MS) {
+      return false;
+    }
+    lastTrigger[zone] = now;
+    return true;
+  }
+};
+
 // ============================================================================
 // 3. Global objects
 // ============================================================================
@@ -312,28 +498,142 @@ Madgwick filterLeft;
 Madgwick filterRight;
 StickState leftStick;
 StickState rightStick;
+Preferences preferences;
+AudioMixer audioMixer;
 
 XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
-// Use a shared set of 5 zones by default. If USE_SHARED_ZONES is false, load
-// left/right files (10 total) so each stick can still hit all zones with its
-// own sound bank.
-XT_Wav_Class zoneCenter("/spiffs/zone_center.wav");
-XT_Wav_Class zoneLeft("/spiffs/zone_left.wav");
-XT_Wav_Class zoneRight("/spiffs/zone_right.wav");
-XT_Wav_Class zoneUp("/spiffs/zone_up.wav");
-XT_Wav_Class zoneFront("/spiffs/zone_front.wav");
+// Use a shared set of 6 zones by default. If USE_SHARED_ZONES is false, load
+// left/right files (12 total) so each stick can still hit all zones with its
+// own sound bank. Each zone has a small voice pool for overlapping hits.
+XT_Wav_Class zoneCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav"),
+  XT_Wav_Class("/zone_center.wav")
+};
+XT_Wav_Class zoneLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav"),
+  XT_Wav_Class("/zone_left.wav")
+};
+XT_Wav_Class zoneRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav"),
+  XT_Wav_Class("/zone_right.wav")
+};
+XT_Wav_Class zoneTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav"),
+  XT_Wav_Class("/zone_top_left.wav")
+};
+XT_Wav_Class zoneTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav"),
+  XT_Wav_Class("/zone_top_right.wav")
+};
+XT_Wav_Class zoneFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav"),
+  XT_Wav_Class("/zone_front.wav")
+};
 
-XT_Wav_Class leftCenter("/spiffs/left_center.wav");
-XT_Wav_Class leftLeft("/spiffs/left_left.wav");
-XT_Wav_Class leftRight("/spiffs/left_right.wav");
-XT_Wav_Class leftUp("/spiffs/left_up.wav");
-XT_Wav_Class leftFront("/spiffs/left_front.wav");
-XT_Wav_Class rightCenter("/spiffs/right_center.wav");
-XT_Wav_Class rightLeft("/spiffs/right_left.wav");
-XT_Wav_Class rightRight("/spiffs/right_right.wav");
-XT_Wav_Class rightUp("/spiffs/right_up.wav");
-XT_Wav_Class rightFront("/spiffs/right_front.wav");
+XT_Wav_Class leftCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav"),
+  XT_Wav_Class("/left_center.wav")
+};
+XT_Wav_Class leftLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav"),
+  XT_Wav_Class("/left_left.wav")
+};
+XT_Wav_Class leftRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav"),
+  XT_Wav_Class("/left_right.wav")
+};
+XT_Wav_Class leftTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav"),
+  XT_Wav_Class("/left_top_left.wav")
+};
+XT_Wav_Class leftTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav"),
+  XT_Wav_Class("/left_top_right.wav")
+};
+XT_Wav_Class leftFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav"),
+  XT_Wav_Class("/left_front.wav")
+};
+XT_Wav_Class rightCenterVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav"),
+  XT_Wav_Class("/right_center.wav")
+};
+XT_Wav_Class rightLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav"),
+  XT_Wav_Class("/right_left.wav")
+};
+XT_Wav_Class rightRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav"),
+  XT_Wav_Class("/right_right.wav")
+};
+XT_Wav_Class rightTopLeftVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav"),
+  XT_Wav_Class("/right_top_left.wav")
+};
+XT_Wav_Class rightTopRightVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav"),
+  XT_Wav_Class("/right_top_right.wav")
+};
+XT_Wav_Class rightFrontVoices[POLYPHONY] = {
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav"),
+  XT_Wav_Class("/right_front.wav")
+};
+
+uint8_t zoneCenterIndex = 0;
+uint8_t zoneLeftIndex = 0;
+uint8_t zoneRightIndex = 0;
+uint8_t zoneTopLeftIndex = 0;
+uint8_t zoneTopRightIndex = 0;
+uint8_t zoneFrontIndex = 0;
+uint8_t leftCenterIndex = 0;
+uint8_t leftLeftIndex = 0;
+uint8_t leftRightIndex = 0;
+uint8_t leftTopLeftIndex = 0;
+uint8_t leftTopRightIndex = 0;
+uint8_t leftFrontIndex = 0;
+uint8_t rightCenterIndex = 0;
+uint8_t rightLeftIndex = 0;
+uint8_t rightRightIndex = 0;
+uint8_t rightTopLeftIndex = 0;
+uint8_t rightTopRightIndex = 0;
+uint8_t rightFrontIndex = 0;
 
 // ============================================================================
 // 4. Forward declarations
@@ -356,6 +656,10 @@ void processSerialCommands();
 void printHelp();
 void checkI2CBusHealth();
 void testMode();
+XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index);
+XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick);
+void saveCalibration();
+bool loadCalibration();
 
 // ============================================================================
 // 5. Setup
@@ -373,8 +677,11 @@ void setup() {
   filterRight.begin(SAMPLE_RATE);
 
   initAudio();
-  calibrateSensors();
-  calibrateZoneBaseline();
+  if (!loadCalibration()) {
+    calibrateSensors();
+    calibrateZoneBaseline();
+    saveCalibration();
+  }
   printHelp();
 }
 
@@ -519,13 +826,13 @@ Zone getBaseZone(const StickState &stick) {
     return ZONE_RIGHT;
   }
   if (pitch > PITCH_UP_THRESHOLD) {
-    return ZONE_UP;
+    return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
   }
   return ZONE_CENTER;
 }
 
 Gesture detectRotation(float gyroZ) {
-  if (fabsf(gyroZ) > ROTATION_THRESHOLD * DEG_TO_RAD) {
+  if (fabsf(gyroZ) > ROTATION_THRESHOLD) {
     return GESTURE_ROTATE_Z;
   }
   return GESTURE_NONE;
@@ -552,8 +859,9 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
     stick.sensor.linearAccelZ
   };
 
+  float roll = stick.sensor.roll - stick.neutralRoll;
   Gesture rotationGesture = detectRotation(stick.sensor.gyroZ);
-  Gesture swipeGesture = stick.gestureDetector.detect(linearAccel, dt);
+  Gesture swipeGesture = stick.gestureDetector.detect(linearAccel, dt, roll);
   Gesture gesture = (rotationGesture != GESTURE_NONE) ? rotationGesture : swipeGesture;
 
   float durationMs = millis() - stick.gestureDetector.gestureStart;
@@ -562,7 +870,7 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
                                                    durationMs);
 
   Zone baseZone = getBaseZone(stick);
-  stick.zoneSwitcher.evaluate(baseZone, gesture, stick.gestureStrength);
+  stick.zoneSwitcher.evaluate(baseZone, gesture, stick.gestureStrength, roll);
 
   stick.hitDetector.detect(linearAccel);
 
@@ -584,70 +892,110 @@ void initAudio() {
   }
 
   if (USE_SHARED_ZONES) {
-    if (!SPIFFS.exists("/zone_center.wav")) {
-      Serial.println("WARNING: Missing shared zone audio files. Audio disabled.");
-      AUDIO_ENABLED = false;
-      return;
+    const char *files[] = {
+      "/zone_center.wav",
+      "/zone_left.wav",
+      "/zone_right.wav",
+      "/zone_top_left.wav",
+      "/zone_top_right.wav",
+      "/zone_front.wav"
+    };
+    for (const char *file : files) {
+      if (!SPIFFS.exists(file)) {
+        Serial.print("WARNING: Missing shared zone audio file: ");
+        Serial.println(file);
+        AUDIO_ENABLED = false;
+      }
     }
   } else {
-    if (!SPIFFS.exists("/left_center.wav") || !SPIFFS.exists("/right_center.wav")) {
-      Serial.println("WARNING: Missing per-stick audio files. Audio disabled.");
-      AUDIO_ENABLED = false;
-      return;
+    const char *files[] = {
+      "/left_center.wav",
+      "/left_left.wav",
+      "/left_right.wav",
+      "/left_top_left.wav",
+      "/left_top_right.wav",
+      "/left_front.wav",
+      "/right_center.wav",
+      "/right_left.wav",
+      "/right_right.wav",
+      "/right_top_left.wav",
+      "/right_top_right.wav",
+      "/right_front.wav"
+    };
+    for (const char *file : files) {
+      if (!SPIFFS.exists(file)) {
+        Serial.print("WARNING: Missing per-stick audio file: ");
+        Serial.println(file);
+        AUDIO_ENABLED = false;
+      }
     }
   }
 
-  Serial.println("Audio system initialized successfully");
+  if (AUDIO_ENABLED) {
+    Serial.println("Audio system initialized successfully");
+  }
 }
 
-XT_Wav_Class *getZoneSound(Zone zone, bool isLeftStick) {
+XT_Wav_Class *nextVoice(XT_Wav_Class voices[], uint8_t &index) {
+  XT_Wav_Class *voice = &voices[index];
+  index = (index + 1) % POLYPHONY;
+  return voice;
+}
+
+XT_Wav_Class *getZoneVoice(Zone zone, bool isLeftStick) {
   if (USE_SHARED_ZONES) {
     switch (zone) {
       case ZONE_CENTER:
-        return &zoneCenter;
+        return nextVoice(zoneCenterVoices, zoneCenterIndex);
       case ZONE_LEFT:
-        return &zoneLeft;
+        return nextVoice(zoneLeftVoices, zoneLeftIndex);
       case ZONE_RIGHT:
-        return &zoneRight;
-      case ZONE_UP:
-        return &zoneUp;
+        return nextVoice(zoneRightVoices, zoneRightIndex);
+      case ZONE_TOP_LEFT:
+        return nextVoice(zoneTopLeftVoices, zoneTopLeftIndex);
+      case ZONE_TOP_RIGHT:
+        return nextVoice(zoneTopRightVoices, zoneTopRightIndex);
       case ZONE_FRONT:
-        return &zoneFront;
+        return nextVoice(zoneFrontVoices, zoneFrontIndex);
       default:
-        return &zoneCenter;
+        return nextVoice(zoneCenterVoices, zoneCenterIndex);
     }
   }
 
   if (isLeftStick) {
     switch (zone) {
       case ZONE_CENTER:
-        return &leftCenter;
+        return nextVoice(leftCenterVoices, leftCenterIndex);
       case ZONE_LEFT:
-        return &leftLeft;
+        return nextVoice(leftLeftVoices, leftLeftIndex);
       case ZONE_RIGHT:
-        return &leftRight;
-      case ZONE_UP:
-        return &leftUp;
+        return nextVoice(leftRightVoices, leftRightIndex);
+      case ZONE_TOP_LEFT:
+        return nextVoice(leftTopLeftVoices, leftTopLeftIndex);
+      case ZONE_TOP_RIGHT:
+        return nextVoice(leftTopRightVoices, leftTopRightIndex);
       case ZONE_FRONT:
-        return &leftFront;
+        return nextVoice(leftFrontVoices, leftFrontIndex);
       default:
-        return &leftCenter;
+        return nextVoice(leftCenterVoices, leftCenterIndex);
     }
   }
 
   switch (zone) {
     case ZONE_CENTER:
-      return &rightCenter;
+      return nextVoice(rightCenterVoices, rightCenterIndex);
     case ZONE_LEFT:
-      return &rightLeft;
+      return nextVoice(rightLeftVoices, rightLeftIndex);
     case ZONE_RIGHT:
-      return &rightRight;
-    case ZONE_UP:
-      return &rightUp;
+      return nextVoice(rightRightVoices, rightRightIndex);
+    case ZONE_TOP_LEFT:
+      return nextVoice(rightTopLeftVoices, rightTopLeftIndex);
+    case ZONE_TOP_RIGHT:
+      return nextVoice(rightTopRightVoices, rightTopRightIndex);
     case ZONE_FRONT:
-      return &rightFront;
+      return nextVoice(rightFrontVoices, rightFrontIndex);
     default:
-      return &rightCenter;
+      return nextVoice(rightCenterVoices, rightCenterIndex);
   }
 }
 
@@ -656,15 +1004,89 @@ void triggerAudio(const StickState &stick, bool isLeftStick) {
     return;
   }
 
+  Zone zone = stick.zoneSwitcher.currentZone;
+  if (!audioMixer.shouldPlay(zone)) {
+    if (DEBUG_HITS) {
+      Serial.println("Skipped duplicate zone trigger");
+    }
+    return;
+  }
+
   uint8_t dacVolume = map(stick.hitDetector.hitVolume, 0, 255, VOLUME_MIN, VOLUME_MAX);
-  XT_Wav_Class *sound = getZoneSound(stick.zoneSwitcher.currentZone, isLeftStick);
-  sound->Volume = dacVolume;
-  DacAudio.Play(sound);
+  XT_Wav_Class *voice = getZoneVoice(zone, isLeftStick);
+  voice->Volume = dacVolume;
+  DacAudio.Play(voice);
 }
 
 // ============================================================================
 // 10. Calibration functions
 // ============================================================================
+
+void saveCalibration() {
+  preferences.begin("drumcal", false);
+
+  CalibrationData leftCal{
+    leftStick.accelOffset,
+    leftStick.gyroOffset,
+    leftStick.neutralRoll,
+    leftStick.neutralPitch,
+    leftStick.neutralYaw,
+    millis(),
+    0
+  };
+  leftCal.checksum = leftCal.calculateChecksum();
+
+  CalibrationData rightCal{
+    rightStick.accelOffset,
+    rightStick.gyroOffset,
+    rightStick.neutralRoll,
+    rightStick.neutralPitch,
+    rightStick.neutralYaw,
+    millis(),
+    0
+  };
+  rightCal.checksum = rightCal.calculateChecksum();
+
+  preferences.putBytes("left", &leftCal, sizeof(CalibrationData));
+  preferences.putBytes("right", &rightCal, sizeof(CalibrationData));
+  preferences.end();
+
+  Serial.println("✓ Calibration saved to NVS");
+}
+
+bool loadCalibration() {
+  preferences.begin("drumcal", true);
+
+  CalibrationData leftCal, rightCal;
+  size_t leftSize = preferences.getBytes("left", &leftCal, sizeof(CalibrationData));
+  size_t rightSize = preferences.getBytes("right", &rightCal, sizeof(CalibrationData));
+  preferences.end();
+
+  if (leftSize != sizeof(CalibrationData) || rightSize != sizeof(CalibrationData)) {
+    Serial.println("No saved calibration found");
+    return false;
+  }
+
+  if (!leftCal.isValid() || !rightCal.isValid()) {
+    Serial.println("Saved calibration invalid or expired");
+    return false;
+  }
+
+  leftStick.accelOffset = leftCal.accelOffset;
+  leftStick.gyroOffset = leftCal.gyroOffset;
+  leftStick.neutralRoll = leftCal.neutralRoll;
+  leftStick.neutralPitch = leftCal.neutralPitch;
+  leftStick.neutralYaw = leftCal.neutralYaw;
+
+  rightStick.accelOffset = rightCal.accelOffset;
+  rightStick.gyroOffset = rightCal.gyroOffset;
+  rightStick.neutralRoll = rightCal.neutralRoll;
+  rightStick.neutralPitch = rightCal.neutralPitch;
+  rightStick.neutralYaw = rightCal.neutralYaw;
+
+  Serial.println("✓ Calibration loaded from NVS");
+  return true;
+}
 
 void calibrateSensors() {
   Serial.println("=== CALIBRATION MODE ===");
@@ -784,9 +1206,11 @@ void processSerialCommands() {
   switch (cmd) {
     case 'c':
       calibrateSensors();
+      saveCalibration();
       break;
     case 'z':
       calibrateZoneBaseline();
+      saveCalibration();
       break;
     case 't':
       testMode();
@@ -862,4 +1286,5 @@ void testMode() {
   }
   Serial.println("Test mode complete.");
 }
+
 
