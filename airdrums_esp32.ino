@@ -705,18 +705,13 @@ void updateFusion(SensorData &data, Madgwick &filter, float dt) {
   data.pitch = filter.getPitch();
   data.yaw = filter.getYaw();
 
-  const float q0 = filter.q0;
-  const float q1 = filter.q1;
-  const float q2 = filter.q2;
-  const float q3 = filter.q3;
+  const float rollRad = data.roll * DEG_TO_RAD;
+  const float pitchRad = data.pitch * DEG_TO_RAD;
   Vector3f gravity{
-    2.0f * (q1 * q3 - q0 * q2),
-    2.0f * (q0 * q1 + q2 * q3),
-    q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3
+    sinf(pitchRad) * 9.81f,
+    -sinf(rollRad) * cosf(pitchRad) * 9.81f,
+    cosf(rollRad) * cosf(pitchRad) * 9.81f
   };
-  gravity.x *= 9.81f;
-  gravity.y *= 9.81f;
-  gravity.z *= 9.81f;
 
   data.linearAccelX = ax - gravity.x;
   data.linearAccelY = ay - gravity.y;
