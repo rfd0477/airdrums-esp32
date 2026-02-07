@@ -160,7 +160,8 @@ airdrums_esp32/
 3. In Arduino IDE:
    - Install **ESP32 Sketch Data Upload** tool
    - Select board + port
-   - Use **Tools → ESP32 Sketch Data Upload**
+   - In **Tools → Partition Scheme**, pick a layout that includes **LittleFS**
+   - Use **Tools → ESP32 Sketch Data Upload** (uploads to LittleFS)
 
 ---
 
