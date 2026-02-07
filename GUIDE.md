@@ -169,17 +169,24 @@ airdrums_esp32/
 
 1. Open `airdrums_esp32.ino` in Arduino IDE.
 2. Select **Board: ESP32 Dev Module**.
-3. **ESP32 core compatibility:** `XT_DAC_Audio` needs a small patch for ESP32 Arduino core **3.x** (timer/DAC register API changes). If you prefer to avoid patching, use **ESP32 core 2.0.x** (e.g. 2.0.17).
-4. **If you are on core 3.x**, apply the included patch to your local library:
+3. **ESP32 core compatibility:** `XT_DAC_Audio` needs a small library edit for ESP32 Arduino core **3.x** (timer/DAC register API changes). If you prefer to avoid patching, use **ESP32 core 2.0.x** (e.g. 2.0.17).
+4. **If you are on core 3.x**, edit your local library file:
    - Locate your library folder, e.g.
      `C:\\Users\\<you>\\Documents\\Arduino\\libraries\\XT_DAC_Audio\\XT_DAC_Audio.cpp`
-   - Apply the patch file: `patches/xt_dac_audio_core3.patch`
+   - Add `#include <driver/dac.h>` near the top of `XT_DAC_Audio.cpp`
+   - Replace old DAC register writes (`SET_PERI_REG_BITS` / `SET_PERI_REG_MASK`) with:
+     - `dac_output_voltage(DAC_CHANNEL_1, LastDacValue);`
+     - `dac_output_enable(DAC_CHANNEL_1);`
+     - `dac_output_voltage(DAC_CHANNEL_2, LastDacValue);`
+     - `dac_output_enable(DAC_CHANNEL_2);`
+   - Replace old timer setup calls (`timerBegin(...,80,true)`, `timerAttachInterrupt(...,true)`, `timerAlarmWrite`, `timerAlarmEnable`) with:
+     - `timer = timerBegin(1000000);`
+     - `timerAttachInterrupt(timer, &onTimer);`
+     - `timerAlarm(timer, 4, true, 0);`
+     - `timerStart(timer);`
    - Reopen Arduino IDE (so it reloads the library)
 5. Choose the correct COM port.
 6. Click **Upload**.
-
-**What is `patches/xt_dac_audio_core3.patch`?**  
-It is a small patch that updates the **XT_DAC_Audio** library to work with ESP32 Arduino core **3.x**. It replaces the old timer/DAC register calls with the new core 3.x APIs (e.g., `timerBegin(...)`, `timerAlarm(...)`, and `dac_output_voltage()`), fixing the compile errors you saw on ESP32 core 3.3.6.
 
 ---
 

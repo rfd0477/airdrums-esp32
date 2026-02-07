@@ -43,6 +43,22 @@
  * +/- - Adjust hit threshold
  * h - Show help
  *
+ * ESP32 CORE 3.x NOTE (XT_DAC_Audio):
+ * ----------------------------------
+ * If compiling with ESP32 Arduino core 3.x, update your local XT_DAC_Audio
+ * library (XT_DAC_Audio.cpp):
+ *   - add: #include <driver/dac.h>
+ *   - replace old DAC register writes with:
+ *       dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
+ *       dac_output_enable(DAC_CHANNEL_1);
+ *       dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
+ *       dac_output_enable(DAC_CHANNEL_2);
+ *   - replace old timer setup with:
+ *       timer = timerBegin(1000000);
+ *       timerAttachInterrupt(timer, &onTimer);
+ *       timerAlarm(timer, 4, true, 0);
+ *       timerStart(timer);
+ *
  * AUDIO FILES (upload to LittleFS):
  * --------------------------------
  * Format: 8-bit mono WAV @ 16kHz
