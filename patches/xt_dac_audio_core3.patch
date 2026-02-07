@@ -1,0 +1,28 @@
+*** Begin Patch
+*** Update File: XT_DAC_Audio.cpp
+@@
+ #include "esp32-hal-timer.h"
+ #include "XT_DAC_Audio.h"
+ #include "HardwareSerial.h"
+ #include "soc/sens_reg.h"  // For dacWrite() patch, TEB Sep-16-2019
++#include <driver/dac.h>
+@@
+-            SET_PERI_REG_BITS(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_DAC, LastDacValue, RTC_IO_PDAC1_DAC_S);
+-            SET_PERI_REG_MASK(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_XPD_DAC | RTC_IO_PDAC1_DAC_XPD_FORCE);
++            dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
++            dac_output_enable(DAC_CHANNEL_1);
+@@
+-            SET_PERI_REG_BITS(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_DAC, LastDacValue, RTC_IO_PDAC2_DAC_S);
+-            SET_PERI_REG_MASK(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_XPD_DAC | RTC_IO_PDAC2_DAC_XPD_FORCE);
++            dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
++            dac_output_enable(DAC_CHANNEL_2);
+@@
+-	timer = timerBegin(TimerNo, 80, true);          // use timer TimerNo, pre-scaler is 80 (divide by 8000), count up
+-	timerAttachInterrupt(timer, &onTimer, true);    // P3= edge triggered
+-	timerAlarmWrite(timer, 20, true);               // will trigger 250,000 times per second,
+-	timerAlarmEnable(timer);                        // enable
++	timer = timerBegin(1000000);                    // 1MHz timer frequency
++	timerAttachInterrupt(timer, &onTimer);          // attach interrupt callback
++	timerAlarm(timer, 4, true, 0);                  // 250kHz interrupt (1,000,000 / 4)
++	timerStart(timer);                              // start the timer
+*** End Patch
