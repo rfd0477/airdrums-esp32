@@ -169,9 +169,14 @@ airdrums_esp32/
 
 1. Open `airdrums_esp32.ino` in Arduino IDE.
 2. Select **Board: ESP32 Dev Module**.
-3. **ESP32 core compatibility:** `XT_DAC_Audio` is not currently compatible with ESP32 Arduino core **3.x** (timer/DAC register API changes). If you see compile errors in `XT_DAC_Audio.cpp`, use **ESP32 core 2.0.x** (e.g. 2.0.17) or a patched XT_DAC_Audio fork that supports core 3.x.
-3. Choose the correct COM port.
-4. Click **Upload**.
+3. **ESP32 core compatibility:** `XT_DAC_Audio` needs a small patch for ESP32 Arduino core **3.x** (timer/DAC register API changes). If you prefer to avoid patching, use **ESP32 core 2.0.x** (e.g. 2.0.17).
+4. **If you are on core 3.x**, apply the included patch to your local library:
+   - Locate your library folder, e.g.
+     `C:\\Users\\<you>\\Documents\\Arduino\\libraries\\XT_DAC_Audio\\XT_DAC_Audio.cpp`
+   - Apply the patch file: `patches/xt_dac_audio_core3.patch`
+   - Reopen Arduino IDE (so it reloads the library)
+5. Choose the correct COM port.
+6. Click **Upload**.
 
 ---
 

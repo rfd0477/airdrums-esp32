@@ -1,0 +1,26 @@
+*** Begin Patch
+*** Update File: XT_DAC_Audio.cpp
+@@
+-#include <XT_DAC_Audio.h>
++#include <XT_DAC_Audio.h>
++#include <driver/dac.h>
+@@
+-            SET_PERI_REG_BITS(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_DAC, LastDacValue, RTC_IO_PDAC1_DAC_S);
+-            SET_PERI_REG_MASK(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_XPD_DAC | RTC_IO_PDAC1_DAC_XPD_FORCE);
++            dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
++            dac_output_enable(DAC_CHANNEL_1);
+@@
+-            SET_PERI_REG_BITS(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_DAC, LastDacValue, RTC_IO_PDAC2_DAC_S);
+-            SET_PERI_REG_MASK(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_XPD_DAC | RTC_IO_PDAC2_DAC_XPD_FORCE);
++            dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
++            dac_output_enable(DAC_CHANNEL_2);
+@@
+-        timer = timerBegin(TimerNo, 80, true);
+-        timerAttachInterrupt(timer, &onTimer, true);
+-        timerAlarmWrite(timer, 20, true);
+-        timerAlarmEnable(timer);
++        timer = timerBegin(1000000);
++        timerAttachInterrupt(timer, &onTimer);
++        timerAlarm(timer, 4, true, 0);
++        timerStart(timer);
+*** End Patch
