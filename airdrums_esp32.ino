@@ -62,6 +62,9 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 
+// XT_DAC_Audio's constructor expects const unsigned char* in some versions.
+#define WAV_PATH(path) reinterpret_cast<const unsigned char *>(path)
+
 // ============================================================================
 // 1. Configuration constants
 // ============================================================================
@@ -502,40 +505,40 @@ XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
 // Shared set of 6 zones. Each zone has a small voice pool for overlapping hits.
 XT_Wav_Class zoneCenterVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav")
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav"))
 };
 XT_Wav_Class zoneLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav")
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav"))
 };
 XT_Wav_Class zoneRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav")
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav"))
 };
 XT_Wav_Class zoneTopLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav")
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav"))
 };
 XT_Wav_Class zoneTopRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav")
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav"))
 };
 XT_Wav_Class zoneFrontVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav")
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav"))
 };
 
 uint8_t zoneCenterIndex = 0;
@@ -702,11 +705,14 @@ void updateFusion(SensorData &data, Madgwick &filter, float dt) {
   data.pitch = filter.getPitch();
   data.yaw = filter.getYaw();
 
-  Quaternion q = filter.getQuaternion();
+  const float q0 = filter.q0;
+  const float q1 = filter.q1;
+  const float q2 = filter.q2;
+  const float q3 = filter.q3;
   Vector3f gravity{
-    2.0f * (q.x * q.z - q.w * q.y),
-    2.0f * (q.w * q.x + q.y * q.z),
-    q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z
+    2.0f * (q1 * q3 - q0 * q2),
+    2.0f * (q0 * q1 + q2 * q3),
+    q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3
   };
   gravity.x *= 9.81f;
   gravity.y *= 9.81f;

@@ -30,6 +30,9 @@
 #include <XT_DAC_Audio.h>
 #include <LittleFS.h>
 
+// XT_DAC_Audio's constructor expects const unsigned char* in some versions.
+#define WAV_PATH(path) reinterpret_cast<const unsigned char *>(path)
+
 // ========== HARDWARE CONFIGURATION ==========
 constexpr uint8_t I2C_SDA = 21;
 constexpr uint8_t I2C_SCL = 22;
@@ -246,11 +249,11 @@ StickState leftStick;
 StickState rightStick;
 
 XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
-XT_Wav_Class zoneCenter("/spiffs/zone_center.wav");
-XT_Wav_Class zoneLeft("/spiffs/zone_left.wav");
-XT_Wav_Class zoneRight("/spiffs/zone_right.wav");
-XT_Wav_Class zoneLeftUp("/spiffs/zone_left_up.wav");
-XT_Wav_Class zoneRightUp("/spiffs/zone_right_up.wav");
+XT_Wav_Class zoneCenter(WAV_PATH("/zone_center.wav"));
+XT_Wav_Class zoneLeft(WAV_PATH("/zone_left.wav"));
+XT_Wav_Class zoneRight(WAV_PATH("/zone_right.wav"));
+XT_Wav_Class zoneLeftUp(WAV_PATH("/zone_left_up.wav"));
+XT_Wav_Class zoneRightUp(WAV_PATH("/zone_right_up.wav"));
 
 void initSensors();
 void initAudio();
