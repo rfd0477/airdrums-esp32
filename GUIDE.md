@@ -13,7 +13,7 @@ This guide walks through **everything** needed to assemble, wire, calibrate, tes
 5. [MPU6050 Placement on the Drumsticks](#mpu6050-placement-on-the-drumsticks)
 6. [Audio Chain (DAC → RC Filter → PAM8403 → Speakers)](#audio-chain-dac--rc-filter--pam8403--speakers)
 7. [Preparing WAV Files](#preparing-wav-files)
-8. [Uploading WAVs to SPIFFS](#uploading-wavs-to-spiffs)
+8. [Uploading WAVs to LittleFS](#uploading-wavs-to-littlefs)
 9. [Flashing the Firmware](#flashing-the-firmware)
 10. [IMU Test & Calibration](#imu-test--calibration)
 11. [Tuning & Troubleshooting](#tuning--troubleshooting)
@@ -27,7 +27,7 @@ This guide walks through **everything** needed to assemble, wire, calibrate, tes
 - **Sensors:** 2× MPU6050 (one per stick, I²C at 400 kHz)
 - **Audio:** ESP32 DAC → RC filter → PAM8403 stereo amplifier → speakers
 - **Zones:** Shared 6-zone set (Center, Left, Right, Top Left, Top Right, Front)
-- **Audio Files:** Stored on SPIFFS in `/zone_*.wav`
+- **Audio Files:** Stored on LittleFS in `/zone_*.wav`
 
 ---
 
@@ -140,7 +140,7 @@ ffmpeg -i input.wav -ac 1 -ar 16000 -f u8 zone_center.wav
 
 ---
 
-## Uploading WAVs to SPIFFS
+## Uploading WAVs to LittleFS
 
 1. Create a `data/` folder next to your `.ino` sketch.
 2. Place all `/zone_*.wav` files inside `data/`.
@@ -233,7 +233,7 @@ Use Serial Monitor:
 - Increase `SOFT_SWITCH_THRESHOLD`
 
 ### No sound
-- Check SPIFFS upload
+- Check LittleFS upload
 - Confirm file names match exactly
 - Check RC filter wiring and PAM8403 power
 
@@ -250,7 +250,7 @@ Use Serial Monitor:
 ## Quick Checklist
 
 - [ ] Both IMUs detected (0x68, 0x69)
-- [ ] WAV files uploaded to SPIFFS
+- [ ] WAV files uploaded to LittleFS
 - [ ] DAC filter and amplifier wired correctly
 - [ ] Calibration saved to NVS
 - [ ] Zones respond predictably

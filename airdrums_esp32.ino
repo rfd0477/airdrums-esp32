@@ -43,7 +43,7 @@
  * +/- - Adjust hit threshold
  * h - Show help
  *
- * AUDIO FILES (upload to SPIFFS):
+ * AUDIO FILES (upload to LittleFS):
  * --------------------------------
  * Format: 8-bit mono WAV @ 16kHz
  * Files (default shared set for both sticks):
@@ -59,7 +59,7 @@
 #include <MadgwickAHRS.h>
 #include <driver/dac.h>
 #include <XT_DAC_Audio.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <Preferences.h>
 
 // ============================================================================
@@ -794,8 +794,8 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
 // ============================================================================
 
 void initAudio() {
-  if (!SPIFFS.begin(true)) {
-    Serial.println("ERROR: SPIFFS mount failed!");
+  if (!LittleFS.begin(true)) {
+    Serial.println("ERROR: LittleFS mount failed!");
     Serial.println("Upload WAV files via Arduino IDE: Tools > ESP32 Sketch Data Upload");
     AUDIO_ENABLED = false;
     return;
@@ -810,7 +810,7 @@ void initAudio() {
     "/zone_front.wav"
   };
   for (const char *file : files) {
-    if (!SPIFFS.exists(file)) {
+    if (!LittleFS.exists(file)) {
       Serial.print("WARNING: Missing shared zone audio file: ");
       Serial.println(file);
       AUDIO_ENABLED = false;

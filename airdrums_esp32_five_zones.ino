@@ -16,7 +16,7 @@
  *   3: LEFT_UP
  *   4: RIGHT_UP
  *
- * Audio files (shared set, SPIFFS):
+ * Audio files (shared set, LittleFS):
  *   zone_center.wav, zone_left.wav, zone_right.wav, zone_left_up.wav, zone_right_up.wav
  *
  * ============================================================================
@@ -28,7 +28,7 @@
 #include <MadgwickAHRS.h>
 #include <driver/dac.h>
 #include <XT_DAC_Audio.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 
 // ========== HARDWARE CONFIGURATION ==========
 constexpr uint8_t I2C_SDA = 21;
@@ -407,11 +407,12 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
 }
 
 void initAudio() {
-  if (!SPIFFS.begin(true)) {
+  if (!LittleFS.begin(true)) {
+    Serial.println("ERROR: LittleFS mount failed!");
     AUDIO_ENABLED = false;
     return;
   }
-  if (!SPIFFS.exists("/zone_center.wav")) {
+  if (!LittleFS.exists("/zone_center.wav")) {
     AUDIO_ENABLED = false;
   }
 }
@@ -510,4 +511,3 @@ void debugPrint() {
     }
   }
 }
-
