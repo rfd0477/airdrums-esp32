@@ -178,6 +178,9 @@ airdrums_esp32/
 5. Choose the correct COM port.
 6. Click **Upload**.
 
+**What is `patches/xt_dac_audio_core3.patch`?**  
+It is a small patch that updates the **XT_DAC_Audio** library to work with ESP32 Arduino core **3.x**. It replaces the old timer/DAC register calls with the new core 3.x APIs (e.g., `timerBegin(...)`, `timerAlarm(...)`, and `dac_output_voltage()`), fixing the compile errors you saw on ESP32 core 3.3.6.
+
 ---
 
 ## IMU Test & Calibration
