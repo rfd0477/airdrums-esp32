@@ -171,7 +171,7 @@ airdrums_esp32/
 2. Select **Board: ESP32 Dev Module**.
 3. **ESP32 core compatibility:** `XT_DAC_Audio` needs a small library edit for ESP32 Arduino core **3.x** (timer/DAC register API changes). If you prefer to avoid patching, use **ESP32 core 2.0.x** (e.g. 2.0.17).
 4. **If you are on core 3.x**, edit your local library file:
-   - Optional: apply `patches/xt_dac_audio_core3.patch` (included in this repo) to `XT_DAC_Audio.cpp` before manual edits.
+   - Optional: use `patches/xt_dac_audio_core3.patch` (included in this repo), which contains the full patched code blocks for `XT_DAC_Audio.cpp`.
    - Locate your library folder, e.g.
      `C:\\Users\\<you>\\Documents\\Arduino\\libraries\\XT_DAC_Audio\\XT_DAC_Audio.cpp`
    - Add `#include <driver/dac.h>` near the top of `XT_DAC_Audio.cpp`

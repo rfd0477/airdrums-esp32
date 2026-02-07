@@ -1,28 +1,66 @@
-*** Begin Patch
-*** Update File: XT_DAC_Audio.cpp
-@@
- #include "esp32-hal-timer.h"
- #include "XT_DAC_Audio.h"
- #include "HardwareSerial.h"
- #include "soc/sens_reg.h"  // For dacWrite() patch, TEB Sep-16-2019
-+#include <driver/dac.h>
-@@
--            SET_PERI_REG_BITS(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_DAC, LastDacValue, RTC_IO_PDAC1_DAC_S);
--            SET_PERI_REG_MASK(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_XPD_DAC | RTC_IO_PDAC1_DAC_XPD_FORCE);
-+            dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
-+            dac_output_enable(DAC_CHANNEL_1);
-@@
--            SET_PERI_REG_BITS(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_DAC, LastDacValue, RTC_IO_PDAC2_DAC_S);
--            SET_PERI_REG_MASK(RTC_IO_PAD_DAC2_REG, RTC_IO_PDAC2_XPD_DAC | RTC_IO_PDAC2_DAC_XPD_FORCE);
-+            dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
-+            dac_output_enable(DAC_CHANNEL_2);
-@@
--	timer = timerBegin(TimerNo, 80, true);          // use timer TimerNo, pre-scaler is 80 (divide by 8000), count up
--	timerAttachInterrupt(timer, &onTimer, true);    // P3= edge triggered
--	timerAlarmWrite(timer, 20, true);               // will trigger 250,000 times per second,
--	timerAlarmEnable(timer);                        // enable
-+	timer = timerBegin(1000000);                    // 1MHz timer frequency
-+	timerAttachInterrupt(timer, &onTimer);          // attach interrupt callback
-+	timerAlarm(timer, 4, true, 0);                  // 250kHz interrupt (1,000,000 / 4)
-+	timerStart(timer);                              // start the timer
-*** End Patch
+// XT_DAC_Audio core-3 compatibility patch content (patched code blocks)
+// Apply these blocks to your local XT_DAC_Audio.cpp exactly as shown.
+
+// =========================
+// 1) INCLUDE BLOCK (patched)
+// =========================
+#include "esp32-hal-timer.h"
+#include "XT_DAC_Audio.h"
+#include "HardwareSerial.h"
+#include "soc/sens_reg.h"  // For dacWrite() patch, TEB Sep-16-2019
+#include <driver/dac.h>
+
+
+// ===============================
+// 2) onTimer() DAC1/DAC2 (patched)
+// ===============================
+void IRAM_ATTR onTimer()
+{
+    if(LastDacValue!=Buffer[NextPlayPos])
+    {
+        LastDacValue=Buffer[NextPlayPos];
+
+        // Start of dacWrite() emulation ...
+        CLEAR_PERI_REG_MASK(SENS_SAR_DAC_CTRL1_REG, SENS_SW_TONE_EN);  //Disable Tone
+        if(DacPin==25) {
+            CLEAR_PERI_REG_MASK(SENS_SAR_DAC_CTRL2_REG, SENS_DAC_CW_EN1_M);
+            dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
+            dac_output_enable(DAC_CHANNEL_1);
+        }
+        else if(DacPin==26) {
+            CLEAR_PERI_REG_MASK(SENS_SAR_DAC_CTRL2_REG, SENS_DAC_CW_EN2_M);
+            dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
+            dac_output_enable(DAC_CHANNEL_2);
+        }
+        // End of dacWrite() emulation.
+    }
+
+    Buffer[NextPlayPos]=0x7f;
+    NextPlayPos++;
+    if(NextPlayPos >= BufferSize)
+        NextPlayPos=0;
+}
+
+
+// =============================================
+// 3) XT_DAC_Audio_Class constructor (timer fix)
+// =============================================
+XT_DAC_Audio_Class::XT_DAC_Audio_Class(uint8_t TheDacPin, uint8_t TimerNo,uint16_t PassedBufferSize)
+{
+    Buffer=new uint8_t[PassedBufferSize];
+    BufferSize=PassedBufferSize;
+    for(uint32_t i=0;i<PassedBufferSize;i++)
+        Buffer[i]=0x7f;
+    FirstPlayListItem=nullptr;
+    DacPin=TheDacPin;
+    LastDacValue=0x7F;
+    dacWrite(DacPin,LastDacValue);
+    InitSineValues();
+
+    // ESP32 core 3.x timer API
+    timer = timerBegin(1000000);                    // 1MHz timer frequency
+    timerAttachInterrupt(timer, &onTimer);          // attach interrupt callback
+    timerAlarm(timer, 4, true, 0);                  // 250kHz interrupt (1,000,000 / 4)
+    timerStart(timer);                              // start the timer
+    delay(1);
+}
