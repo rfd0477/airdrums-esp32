@@ -43,7 +43,23 @@
  * +/- - Adjust hit threshold
  * h - Show help
  *
- * AUDIO FILES (upload to SPIFFS):
+ * ESP32 CORE 3.x NOTE (XT_DAC_Audio):
+ * ----------------------------------
+ * If compiling with ESP32 Arduino core 3.x, update your local XT_DAC_Audio
+ * library (XT_DAC_Audio.cpp):
+ *   - add: #include <driver/dac.h>
+ *   - replace old DAC register writes with:
+ *       dac_output_voltage(DAC_CHANNEL_1, LastDacValue);
+ *       dac_output_enable(DAC_CHANNEL_1);
+ *       dac_output_voltage(DAC_CHANNEL_2, LastDacValue);
+ *       dac_output_enable(DAC_CHANNEL_2);
+ *   - replace old timer setup with:
+ *       timer = timerBegin(1000000);
+ *       timerAttachInterrupt(timer, &onTimer);
+ *       timerAlarm(timer, 4, true, 0);
+ *       timerStart(timer);
+ *
+ * AUDIO FILES (upload to LittleFS):
  * --------------------------------
  * Format: 8-bit mono WAV @ 16kHz
  * Files (default shared set for both sticks):
@@ -59,8 +75,11 @@
 #include <MadgwickAHRS.h>
 #include <driver/dac.h>
 #include <XT_DAC_Audio.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <Preferences.h>
+
+// XT_DAC_Audio's constructor expects const unsigned char* in some versions.
+#define WAV_PATH(path) reinterpret_cast<const unsigned char *>(path)
 
 // ============================================================================
 // 1. Configuration constants
@@ -92,6 +111,7 @@ float PITCH_UP_THRESHOLD = 45.0f;       // degrees (Y-tilt for TOP zones)
 float VELOCITY_THRESHOLD = 2.0f;        // m/s (fast movement detection)
 float DISTANCE_THRESHOLD = 0.05f;       // meters (5cm minimum travel)
 float ROTATION_THRESHOLD = 200.0f * DEG_TO_RAD;  // rad/s (Z-axis rotation)
+float X_ROLL_ROTATION_THRESHOLD = 120.0f * DEG_TO_RAD; // rad/s (X-axis roll direction gate)
 float GESTURE_TIME_WINDOW = 150.0f;     // ms (gesture must complete within)
 
 // ========== SMART ZONE SWITCHING ==========
@@ -167,7 +187,8 @@ enum Gesture : uint8_t {
   GESTURE_SWIPE_UP = 3,
   GESTURE_SWIPE_UP_LEFT = 4,
   GESTURE_SWIPE_UP_RIGHT = 5,
-  GESTURE_ROTATE_Z = 6
+  GESTURE_ROTATE_Z_CW = 6,
+  GESTURE_ROTATE_Z_CCW = 7
 };
 
 struct GestureDetector {
@@ -343,13 +364,15 @@ struct SmartZoneSwitcher {
       case GESTURE_SWIPE_RIGHT:
         return ZONE_RIGHT;
       case GESTURE_SWIPE_UP_LEFT:
-        return ZONE_TOP_LEFT;
+        return ZONE_CENTER;
       case GESTURE_SWIPE_UP_RIGHT:
-        return ZONE_TOP_RIGHT;
+        return ZONE_CENTER;
       case GESTURE_SWIPE_UP:
-        return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
-      case GESTURE_ROTATE_Z:
-        return ZONE_FRONT;
+        return ZONE_CENTER;
+      case GESTURE_ROTATE_Z_CCW:
+        return ZONE_TOP_RIGHT; // anti-clockwise -> right-up
+      case GESTURE_ROTATE_Z_CW:
+        return ZONE_TOP_LEFT;  // clockwise -> left-up
       default:
         return ZONE_NONE;
     }
@@ -502,40 +525,40 @@ XT_DAC_Audio_Class DacAudio(DAC_PIN, 0);
 
 // Shared set of 6 zones. Each zone has a small voice pool for overlapping hits.
 XT_Wav_Class zoneCenterVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav"),
-  XT_Wav_Class("/zone_center.wav")
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_center.wav"))
 };
 XT_Wav_Class zoneLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav"),
-  XT_Wav_Class("/zone_left.wav")
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_left.wav"))
 };
 XT_Wav_Class zoneRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav"),
-  XT_Wav_Class("/zone_right.wav")
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_right.wav"))
 };
 XT_Wav_Class zoneTopLeftVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav"),
-  XT_Wav_Class("/zone_top_left.wav")
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_left.wav"))
 };
 XT_Wav_Class zoneTopRightVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav"),
-  XT_Wav_Class("/zone_top_right.wav")
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_top_right.wav"))
 };
 XT_Wav_Class zoneFrontVoices[POLYPHONY] = {
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav"),
-  XT_Wav_Class("/zone_front.wav")
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav")),
+  XT_Wav_Class(WAV_PATH("/zone_front.wav"))
 };
 
 uint8_t zoneCenterIndex = 0;
@@ -557,7 +580,7 @@ void readSensor(Adafruit_MPU6050 &mpu, SensorData &data, const Vector3f &accelOf
                 const Vector3f &gyroOffset);
 void updateFusion(SensorData &data, Madgwick &filter, float dt);
 Zone getBaseZone(const StickState &stick);
-Gesture detectRotation(float gyroZ);
+Gesture detectRotation(float gyroZ, float gyroX);
 float calculateGestureStrength(const Vector3f &velocity, const Vector3f &displacement, float durationMs);
 void processStick(StickState &stick, Madgwick &filter, float dt);
 void triggerAudio(const StickState &stick, bool isLeftStick);
@@ -702,15 +725,13 @@ void updateFusion(SensorData &data, Madgwick &filter, float dt) {
   data.pitch = filter.getPitch();
   data.yaw = filter.getYaw();
 
-  Quaternion q = filter.getQuaternion();
+  const float rollRad = data.roll * DEG_TO_RAD;
+  const float pitchRad = data.pitch * DEG_TO_RAD;
   Vector3f gravity{
-    2.0f * (q.x * q.z - q.w * q.y),
-    2.0f * (q.w * q.x + q.y * q.z),
-    q.w * q.w - q.x * q.x - q.y * q.y + q.z * q.z
+    sinf(pitchRad) * 9.81f,
+    -sinf(rollRad) * cosf(pitchRad) * 9.81f,
+    cosf(rollRad) * cosf(pitchRad) * 9.81f
   };
-  gravity.x *= 9.81f;
-  gravity.y *= 9.81f;
-  gravity.z *= 9.81f;
 
   data.linearAccelX = ax - gravity.x;
   data.linearAccelY = ay - gravity.y;
@@ -736,14 +757,20 @@ Zone getBaseZone(const StickState &stick) {
     return ZONE_RIGHT;
   }
   if (pitch > PITCH_UP_THRESHOLD) {
-    return (roll >= 0.0f) ? ZONE_TOP_RIGHT : ZONE_TOP_LEFT;
+    return ZONE_FRONT;
   }
   return ZONE_CENTER;
 }
 
-Gesture detectRotation(float gyroZ) {
-  if (fabsf(gyroZ) > ROTATION_THRESHOLD) {
-    return GESTURE_ROTATE_Z;
+Gesture detectRotation(float gyroZ, float gyroX) {
+  // Top zones now require TWO conditions:
+  // 1) meaningful Z-axis rotation (front/up rotational intent)
+  // 2) X-axis roll direction: anti-clockwise -> right-up, clockwise -> left-up
+  if (fabsf(gyroZ) > ROTATION_THRESHOLD && fabsf(gyroX) > X_ROLL_ROTATION_THRESHOLD) {
+    if (gyroX > 0.0f) {
+      return GESTURE_ROTATE_Z_CCW; // anti-clockwise X-roll => right-up
+    }
+    return GESTURE_ROTATE_Z_CW;    // clockwise X-roll => left-up
   }
   return GESTURE_NONE;
 }
@@ -770,7 +797,7 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
   };
 
   float roll = stick.sensor.roll - stick.neutralRoll;
-  Gesture rotationGesture = detectRotation(stick.sensor.gyroZ);
+  Gesture rotationGesture = detectRotation(stick.sensor.gyroZ, stick.sensor.gyroX);
   Gesture swipeGesture = stick.gestureDetector.detect(linearAccel, dt, roll);
   Gesture gesture = (rotationGesture != GESTURE_NONE) ? rotationGesture : swipeGesture;
 
@@ -794,8 +821,8 @@ void processStick(StickState &stick, Madgwick &filter, float dt) {
 // ============================================================================
 
 void initAudio() {
-  if (!SPIFFS.begin(true)) {
-    Serial.println("ERROR: SPIFFS mount failed!");
+  if (!LittleFS.begin(true)) {
+    Serial.println("ERROR: LittleFS mount failed!");
     Serial.println("Upload WAV files via Arduino IDE: Tools > ESP32 Sketch Data Upload");
     AUDIO_ENABLED = false;
     return;
@@ -810,7 +837,7 @@ void initAudio() {
     "/zone_front.wav"
   };
   for (const char *file : files) {
-    if (!SPIFFS.exists(file)) {
+    if (!LittleFS.exists(file)) {
       Serial.print("WARNING: Missing shared zone audio file: ");
       Serial.println(file);
       AUDIO_ENABLED = false;
